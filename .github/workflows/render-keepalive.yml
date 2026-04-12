@@ -1,0 +1,30 @@
+name: Render Keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping backend health endpoint
+        env:
+          HEALTHCHECK_URL: https://backend-swtracker.onrender.com/health
+        run: |
+          set -euo pipefail
+
+          CURL_ARGS=(
+            --fail
+            --show-error
+            --silent
+            --location
+            --max-time 30
+            --retry 2
+            --retry-delay 5
+          )
+
+          curl "${CURL_ARGS[@]}" "${HEALTHCHECK_URL}"
