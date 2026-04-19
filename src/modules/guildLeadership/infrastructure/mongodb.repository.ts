@@ -24,6 +24,8 @@ import type {
   GuildMemberSnapshotEntity,
   GuildSnapshotEntity,
   GuildTeamUsageEntity,
+  LabyrinthCycleDto,
+  LabyrinthCycleEntity,
   GuildWeeklyPunishmentDto,
   GuildWeeklyPunishmentEntity,
 } from "../domain/models";
@@ -51,6 +53,7 @@ type MongoGuildCollections = {
   defenseDecks: string;
   teamUsage: string;
   currentStates: string;
+  labyrinthCycles: string;
   weeklyPunishments: string;
   healthchecks: string;
 };
@@ -132,6 +135,21 @@ const toWeeklyPunishmentDto = (
   events: JSON.parse(punishment.eventsJson) as GuildWeeklyPunishmentDto["events"],
 });
 
+const toLabyrinthCycleDto = (cycle: LabyrinthCycleEntity): LabyrinthCycleDto => ({
+  guildId: cycle.guildId,
+  guildName: cycle.guildName,
+  cycleStartDate: cycle.cycleStartDate,
+  expectedDurationDays: cycle.expectedDurationDays,
+  requiredAttacksByDay: JSON.parse(cycle.requiredAttacksByDayJson) as number[],
+  actualDurationDays: cycle.actualDurationDays,
+  isConcluded: cycle.isConcluded,
+  concludedAt: cycle.concludedAt,
+  concludedBy: cycle.concludedBy,
+  updatedAt: cycle.updatedAt,
+  updatedBy: cycle.updatedBy,
+  entries: JSON.parse(cycle.entriesJson) as LabyrinthCycleDto["entries"],
+});
+
 const sanitizeMongoDocument = <T extends Document>(document: T | null): T | null => {
   if (!document) {
     return null;
@@ -179,6 +197,7 @@ export class MongoGuildLeadershipRepository
       defenseDecks: this.collectionName("defense_decks"),
       teamUsage: this.collectionName("team_usage"),
       currentStates: this.collectionName("current_states"),
+      labyrinthCycles: this.collectionName("labyrinth_cycles"),
       weeklyPunishments: this.collectionName("weekly_punishments"),
       healthchecks: this.collectionName("healthchecks"),
     };
@@ -320,6 +339,28 @@ export class MongoGuildLeadershipRepository
     return punishments;
   }
 
+  async saveLabyrinthCycle(cycle: LabyrinthCycleEntity): Promise<LabyrinthCycleEntity> {
+    await this.ensureIndexes();
+    const collection = await this.getCollection<LabyrinthCycleEntity>(this.collections.labyrinthCycles);
+
+    await collection.updateOne(
+      cycle.guildId !== undefined
+        ? {
+            guildId: cycle.guildId,
+            cycleStartDate: cycle.cycleStartDate,
+          }
+        : {
+            cycleStartDate: cycle.cycleStartDate,
+          },
+      {
+        $set: cycle,
+      },
+      { upsert: true },
+    );
+
+    return cycle;
+  }
+
   async listSnapshots(): Promise<GuildSnapshotEntity[]> {
     const snapshots = await (await this.getCollection<GuildSnapshotEntity>(this.collections.snapshots))
       .find({})
@@ -447,6 +488,31 @@ export class MongoGuildLeadershipRepository
     return rest;
   }
 
+  async findLabyrinthCycleByStartDate(params: {
+    guildId?: number | string;
+    cycleStartDate: string;
+  }): Promise<LabyrinthCycleDto | null> {
+    const document = await (
+      await this.getCollection<LabyrinthCycleEntity>(this.collections.labyrinthCycles)
+    ).findOne(
+      params.guildId !== undefined
+        ? {
+            guildId: Number(params.guildId),
+            cycleStartDate: params.cycleStartDate,
+          }
+        : {
+            cycleStartDate: params.cycleStartDate,
+          },
+    );
+
+    const sanitized = sanitizeMongoDocument(document as Document | null);
+    if (!sanitized) {
+      return null;
+    }
+
+    return toLabyrinthCycleDto(sanitized as LabyrinthCycleEntity);
+  }
+
   async listWeeklyPunishments(params?: {
     weekKey?: string;
     evaluatedAtFrom?: string;
@@ -531,6 +597,15 @@ export class MongoGuildLeadershipRepository
         { key: { guildKey: 1 }, unique: true, name: "uid_current_state_guild_key" },
         { key: { guildId: 1 }, name: "idx_current_state_guild_id" },
         { key: { updatedAt: -1 }, name: "idx_current_state_updated_at_desc" },
+      ]),
+      db.collection(this.collections.labyrinthCycles).createIndexes([
+        { key: { id: 1 }, unique: true, name: "uid_labyrinth_cycle_id" },
+        {
+          key: { guildId: 1, cycleStartDate: 1 },
+          unique: true,
+          name: "uid_labyrinth_cycle_guild_start",
+        },
+        { key: { cycleStartDate: -1, updatedAt: -1 }, name: "idx_labyrinth_cycle_start_updated_desc" },
       ]),
       db.collection(this.collections.weeklyPunishments).createIndexes([
         { key: { id: 1 }, unique: true, name: "uid_weekly_punishment_id" },

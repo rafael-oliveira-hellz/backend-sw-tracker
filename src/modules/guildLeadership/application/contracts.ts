@@ -11,6 +11,8 @@ import type {
   GuildMemberSnapshotEntity,
   GuildSnapshotEntity,
   GuildTeamUsageEntity,
+  LabyrinthCycleDto,
+  LabyrinthCycleEntity,
   GuildWeeklyPunishmentDto,
   GuildWeeklyPunishmentEntity,
   ImportGuildFilesRequestDto,
@@ -53,6 +55,7 @@ export interface GuildLeadershipRepository {
   saveDefenses(defenses: GuildDefenseDeckEntity[]): Promise<GuildDefenseDeckEntity[]>;
   saveTeamUsage(teamUsage: GuildTeamUsageEntity[]): Promise<GuildTeamUsageEntity[]>;
   saveCurrentState(command: SaveGuildLeadershipCurrentStateCommand): Promise<void>;
+  saveLabyrinthCycle(cycle: LabyrinthCycleEntity): Promise<LabyrinthCycleEntity>;
   saveWeeklyPunishments(
     punishments: GuildWeeklyPunishmentEntity[],
   ): Promise<GuildWeeklyPunishmentEntity[]>;
@@ -65,6 +68,10 @@ export interface GuildLeadershipReadRepository {
   findImportHistoryById(importRunId: string): Promise<GuildImportHistoryDetailDto | null>;
   findCurrentStateByGuildId(guildId: number | string): Promise<GuildCurrentStateDto | null>;
   findLatestCurrentState(): Promise<GuildCurrentStateDto | null>;
+  findLabyrinthCycleByStartDate(params: {
+    guildId?: number | string;
+    cycleStartDate: string;
+  }): Promise<LabyrinthCycleDto | null>;
   listWeeklyPunishments(params?: {
     weekKey?: string;
     evaluatedAtFrom?: string;
