@@ -14,7 +14,7 @@ export type GuildLeadershipImportWithPayloadResult = {
 };
 
 const isGuildRosterCommand = (command: string) =>
-  command === "SWGT-HubUserLogin" || command === "HubUserLogin";
+  command === "SWGT-HubUserLogin" || command === "HubUserLogin" || command === "GetGuildInfo";
 
 const toOptionalNumber = (value: unknown): number | undefined => {
   if (value === null || value === undefined || value === "") {
@@ -124,8 +124,12 @@ export class GuildLeadershipImportService {
   private buildImportedGuildUsers(dto: GuildLeadershipPersistenceDto): ImportedGuildAuthUser[] {
     const guildId = toOptionalNumber(dto.snapshot.guildId);
     const guildName = dto.snapshot.guildName ?? "";
+    const activeRosterSet = new Set(dto.activeRosterWizardIds);
 
     return dto.members
+      .filter((member) =>
+        activeRosterSet.size === 0 ? true : activeRosterSet.has(member.wizardId),
+      )
       .filter((member) => member.member.wizardName.trim() !== "")
       .map((member) => ({
         username: member.member.wizardName,

@@ -65,7 +65,11 @@ const extractGuildIdentityFromSnapshots = (snapshots: GuildSnapshotEntry[]) => {
     }
 
     const command = decodeCommand(snapshot);
-    if (command !== "HubUserLogin" && command !== "SWGT-HubUserLogin") {
+    if (
+      command !== "HubUserLogin" &&
+      command !== "SWGT-HubUserLogin" &&
+      command !== "GetGuildInfo"
+    ) {
       continue;
     }
 
@@ -270,6 +274,7 @@ const buildPersistencePayloadFromSnapshots = (
       siegeMatches: leadershipPayload.siegeMatches,
       mergePolicy: leadershipPayload.mergePolicy,
     },
+    activeRosterWizardIds: leadershipPayload.activeRosterWizardIds,
     members,
     attacks: attacks.sort((left, right) => (right.occurredAt ?? 0) - (left.occurredAt ?? 0)),
     defenses,

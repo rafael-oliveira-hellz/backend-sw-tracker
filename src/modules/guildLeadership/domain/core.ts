@@ -217,6 +217,7 @@ export type GuildLeadershipPayload = {
     duplicateResolution: "latestFileWins";
     notes: string;
   };
+  activeRosterWizardIds: number[];
   members: MemberLeadershipPayload[];
   siegeMatches: SiegeMatchSummary[];
 };
@@ -1097,12 +1098,12 @@ const parseAttendance = (entry: GuildSnapshotEntry, members: Map<number, MemberA
   }
 };
 
-const parseHubUserLogin = (
+const parseActiveRosterSnapshot = (
   entry: GuildSnapshotEntry,
   members: Map<number, MemberAccumulator>,
 ) => {
   if (Array.isArray(entry.data)) {
-    return;
+    return [];
   }
 
   const guildInfo = entry.data.guild_info ?? entry.data.guild ?? {};
@@ -1112,11 +1113,18 @@ const parseHubUserLogin = (
     entry.data.guild_members ??
     entry.data.guild?.guild_members ??
     entry.data.guild_info?.guild_members ??
+    entry.data.guild?.guild_info?.guild_members ??
     {};
+  const activeRosterWizardIds: number[] = [];
 
   for (const guildMember of Object.values(guildMembers)) {
     const memberData = guildMember as JsonObject;
     const wizardId = Number(memberData?.wizard_id);
+    if (!Number.isFinite(wizardId) || wizardId <= 0) {
+      continue;
+    }
+
+    activeRosterWizardIds.push(wizardId);
     const grade = Number(memberData?.grade);
     const member = getMember(members, wizardId);
 
@@ -1132,6 +1140,8 @@ const parseHubUserLogin = (
       guildRole: mapGuildGradeToRole(grade),
     });
   }
+
+  return [...new Set(activeRosterWizardIds)].sort((left, right) => left - right);
 };
 
 const parseSiegeDefenseDecks = (
@@ -1384,6 +1394,7 @@ export const buildGuildLeadershipPayload = (
 ): GuildLeadershipPayload => {
   const members = new Map<number, MemberAccumulator>();
   const siegeMatches = new Map<string, SiegeMatchSummary>();
+  let activeRosterWizardIds: number[] = [];
   const monsterMap = extractMonsterIdMap(snapshots);
   const siegeDeckUnitsEntry = snapshots.find(
     (entry) => decodeCommand(entry) === "SWGTSiegeDeckUnits",
@@ -1415,10 +1426,21 @@ export const buildGuildLeadershipPayload = (
       case "getGuildAttendInfo":
         parseAttendance(entry, members);
         break;
-      case "HubUserLogin":
-      case "SWGT-HubUserLogin":
-        parseHubUserLogin(entry, members);
+      case "GetGuildInfo": {
+        const rosterWizardIds = parseActiveRosterSnapshot(entry, members);
+        if (rosterWizardIds.length > 0) {
+          activeRosterWizardIds = rosterWizardIds;
+        }
         break;
+      }
+      case "HubUserLogin":
+      case "SWGT-HubUserLogin": {
+        const rosterWizardIds = parseActiveRosterSnapshot(entry, members);
+        if (rosterWizardIds.length > 0) {
+          activeRosterWizardIds = rosterWizardIds;
+        }
+        break;
+      }
       case "GetGuildSiegeBattleLog":
       case "GetGuildSiegeBattleLogByWizardId":
         parseSiegeBattleLogs(entry, members, siegeMatches);
@@ -1438,6 +1460,7 @@ export const buildGuildLeadershipPayload = (
       duplicateResolution: "latestFileWins",
       notes: "Arquivos sao ordenados por nome; quando ha duplicidade, o mais novo processado por ultimo prevalece para campos escalares.",
     },
+    activeRosterWizardIds,
     members: [...members.values()]
       .map((member) => ({
         member: member.member,

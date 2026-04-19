@@ -313,6 +313,7 @@ export interface GuildLeadershipPersistenceDto {
   importRun: GuildImportRunDto;
   importSources: GuildImportSourceDto[];
   snapshot: GuildLeadershipSnapshotDto;
+  activeRosterWizardIds: number[];
   members: GuildMemberSnapshotDto[];
   attacks: GuildAttackEventDto[];
   defenses: GuildDefenseDeckDto[];
@@ -365,8 +366,32 @@ export interface GuildCurrentStateDto {
   importRunId: string;
   snapshotId: string;
   updatedAt: string;
+  activeRosterWizardIds: number[];
   siegeMatches: SiegeMatchSummaryDto[];
   members: GuildCurrentMemberStateDto[];
+}
+
+export interface LabyrinthParticipationEntryDto {
+  wizardId: number;
+  memberName: string;
+  validAttacks: number;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
+export interface LabyrinthCycleDto {
+  guildId?: number;
+  guildName?: string;
+  cycleStartDate: string;
+  expectedDurationDays: number;
+  requiredAttacksByDay: number[];
+  actualDurationDays?: number;
+  isConcluded: boolean;
+  concludedAt?: string;
+  concludedBy?: string;
+  updatedAt: string;
+  updatedBy?: string;
+  entries: LabyrinthParticipationEntryDto[];
 }
 
 export type WeeklyPunishmentEventKey =
@@ -557,6 +582,20 @@ export interface GuildWeeklyPunishmentEntity extends BaseEntity {
   eventsJson: string;
 }
 
+export interface LabyrinthCycleEntity extends BaseEntity {
+  guildId?: number;
+  guildName?: string;
+  cycleStartDate: string;
+  expectedDurationDays: number;
+  requiredAttacksByDayJson: string;
+  actualDurationDays?: number;
+  isConcluded: boolean;
+  concludedAt?: string;
+  concludedBy?: string;
+  updatedBy?: string;
+  entriesJson: string;
+}
+
 export interface GuildLeadershipPersistenceEntities {
   importRun: GuildImportRunEntity;
   importSources: GuildImportSourceEntity[];
@@ -743,6 +782,7 @@ export function buildCurrentGuildState(
   entities: GuildLeadershipPersistenceEntities,
 ): GuildCurrentStateDto {
   const updatedAt = entities.snapshot.generatedAt;
+  const activeRosterSet = new Set(dto.activeRosterWizardIds);
 
   return {
     guildId: dto.snapshot.guildId,
@@ -750,23 +790,28 @@ export function buildCurrentGuildState(
     importRunId: entities.importRun.id,
     snapshotId: entities.snapshot.id,
     updatedAt,
+    activeRosterWizardIds: [...dto.activeRosterWizardIds],
     siegeMatches: dto.snapshot.siegeMatches,
-    members: dto.members.map((member) => ({
-      guildId: member.member.guildId ?? dto.snapshot.guildId,
-      guildName: member.member.guildName ?? dto.snapshot.guildName,
-      importRunId: entities.importRun.id,
-      snapshotId: entities.snapshot.id,
-      updatedAt,
-      wizardId: member.wizardId,
-      member: member.member,
-      attendance: member.attendance,
-      subjugation: member.subjugation,
-      labyrinth: member.labyrinth,
-      guildWar: member.guildWar,
-      siege: member.siege,
-      coverage: member.coverage,
-      provenance: member.provenance,
-    })),
+    members: dto.members
+      .filter((member) =>
+        activeRosterSet.size === 0 ? true : activeRosterSet.has(member.wizardId),
+      )
+      .map((member) => ({
+        guildId: member.member.guildId ?? dto.snapshot.guildId,
+        guildName: member.member.guildName ?? dto.snapshot.guildName,
+        importRunId: entities.importRun.id,
+        snapshotId: entities.snapshot.id,
+        updatedAt,
+        wizardId: member.wizardId,
+        member: member.member,
+        attendance: member.attendance,
+        subjugation: member.subjugation,
+        labyrinth: member.labyrinth,
+        guildWar: member.guildWar,
+        siege: member.siege,
+        coverage: member.coverage,
+        provenance: member.provenance,
+      })),
   };
 }
 
@@ -1011,13 +1056,24 @@ export function mergeCurrentGuildState(
     );
   }
 
+  const effectiveActiveRosterWizardIds =
+    incoming.activeRosterWizardIds.length > 0
+      ? [...incoming.activeRosterWizardIds]
+      : existing.activeRosterWizardIds.length > 0
+        ? [...existing.activeRosterWizardIds]
+        : [];
+  const activeRosterSet = new Set(effectiveActiveRosterWizardIds);
+
   return {
     guildId: pickDefined(incoming.guildId, existing.guildId),
     guildName: pickDefined(incoming.guildName, existing.guildName),
     importRunId: incoming.importRunId,
     snapshotId: incoming.snapshotId,
     updatedAt: incoming.updatedAt,
+    activeRosterWizardIds: effectiveActiveRosterWizardIds,
     siegeMatches: mergeSiegeMatches(existing.siegeMatches ?? [], incoming.siegeMatches ?? []),
-    members: Array.from(memberMap.values()).sort((left, right) => left.wizardId - right.wizardId),
+    members: Array.from(memberMap.values())
+      .filter((member) => (activeRosterSet.size === 0 ? true : activeRosterSet.has(member.wizardId)))
+      .sort((left, right) => left.wizardId - right.wizardId),
   };
 }
