@@ -468,7 +468,7 @@ export async function registerGuildLeadershipRoutes(app: FastifyInstance) {
           saved: 0,
           skipped: true,
           reason:
-            "Nenhuma janela de avaliação está elegível neste momento. A participação abre no domingo às 05:00 de Brasília, os avisos de defesa rodam de domingo até segunda 12:00 e o setup de defesa abre na segunda às 12:00 de Brasília.",
+            "Nenhuma janela de avaliação está elegível neste momento. A participação semanal roda no domingo às 22:00 de Brasília, os avisos de defesa rodam de domingo até segunda 12:00 e o setup de defesa abre na segunda às 12:00 de Brasília.",
         };
       request.log.info(
         {

@@ -17,7 +17,6 @@ import type {
 } from "../domain/models";
 
 const BRAZIL_TIMEZONE = "America/Sao_Paulo";
-const PENALTY_COOLDOWN_DAYS = 7;
 const LABYRINTH_FIRST_START_UTC = new Date(Date.UTC(2026, 3, 4));
 const LABYRINTH_CYCLE_DAYS = 15;
 const LABYRINTH_ACTIVE_DAYS = 4;
@@ -120,6 +119,9 @@ const startOfUtcWeekSunday = (date: Date) => {
 };
 
 const endOfUtcWeekSaturday = (weekStart: Date) => addUtcDays(weekStart, 6);
+
+const endOfUtcDay = (date: Date) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999));
 
 const buildPreviousCompletedWeekRange = (now: Date): WeekRange => {
   const brazilToday = createUtcDate(getBrazilCalendarDate(now));
@@ -472,7 +474,7 @@ export class WeeklyPunishmentService {
 
     const week = buildPreviousCompletedWeekRange(now);
     const recentPunishments = await this.repository.listWeeklyPunishments({
-      evaluatedAtFrom: addUtcDays(week.weekStart, -PENALTY_COOLDOWN_DAYS).toISOString(),
+      evaluatedAtFrom: addUtcDays(week.weekStart, -7).toISOString(),
     });
     const existing = await this.repository.listWeeklyPunishments({ weekKey: week.weekKey });
     const entities = await this.buildParticipationPunishmentEntities(
@@ -511,7 +513,7 @@ export class WeeklyPunishmentService {
 
     const week = buildCurrentWeekRange(now);
     const recentPunishments = await this.repository.listWeeklyPunishments({
-      evaluatedAtFrom: addUtcDays(week.weekStart, -PENALTY_COOLDOWN_DAYS).toISOString(),
+      evaluatedAtFrom: addUtcDays(week.weekStart, -7).toISOString(),
     });
     const existing = await this.repository.listWeeklyPunishments({ weekKey: week.weekKey });
     const entities = this.buildDefenseSetupPunishmentEntities(
@@ -695,7 +697,7 @@ export class WeeklyPunishmentService {
 
     const week = buildCurrentWeekRange(now);
     const recentPunishments = await this.repository.listWeeklyPunishments({
-      evaluatedAtFrom: addUtcDays(week.weekStart, -PENALTY_COOLDOWN_DAYS).toISOString(),
+      evaluatedAtFrom: addUtcDays(week.weekStart, -7).toISOString(),
     });
     const existing = await this.repository.listWeeklyPunishments({ weekKey: week.weekKey });
 
@@ -703,7 +705,7 @@ export class WeeklyPunishmentService {
       const existingPunishment = existing.find((entry) => entry.wizardId === member.wizardId);
       const { cooldownActive, nextEligiblePenaltyAt } = this.resolveCooldown(
         member,
-        now.toISOString(),
+        week,
         recentPunishments,
         existingPunishment,
       );
@@ -753,7 +755,7 @@ export class WeeklyPunishmentService {
       const existingPunishment = existing.find((entry) => entry.wizardId === member.wizardId);
       const { cooldownActive, nextEligiblePenaltyAt } = this.resolveCooldown(
         member,
-        evaluatedAt,
+        week,
         recentPunishments,
         existingPunishment,
       );
@@ -790,7 +792,7 @@ export class WeeklyPunishmentService {
       const existingPunishment = existing.find((entry) => entry.wizardId === member.wizardId);
       const { cooldownActive, nextEligiblePenaltyAt } = this.resolveCooldown(
         member,
-        evaluatedAt,
+        week,
         recentPunishments,
         existingPunishment,
       );
@@ -818,7 +820,7 @@ export class WeeklyPunishmentService {
 
   private resolveCooldown(
     member: GuildCurrentMemberStateDto,
-    evaluatedAt: string,
+    week: WeekRange,
     recentPunishments: GuildWeeklyPunishmentDto[],
     existingPunishment?: GuildWeeklyPunishmentDto,
   ) {
@@ -829,17 +831,15 @@ export class WeeklyPunishmentService {
           new Date(right.evaluatedAt).getTime() - new Date(left.evaluatedAt).getTime(),
       )[0];
 
-    const cooldownActive = latestRecentPunishment
-      ? new Date(latestRecentPunishment.evaluatedAt).getTime() +
-          PENALTY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000 >
-        new Date(evaluatedAt).getTime()
+    const priorSuspensionEndsAt = latestRecentPunishment?.nextEligiblePenaltyAt
+      ? new Date(latestRecentPunishment.nextEligiblePenaltyAt)
+      : undefined;
+    const cooldownActive = priorSuspensionEndsAt
+      ? priorSuspensionEndsAt.getTime() >= week.weekStart.getTime()
       : existingPunishment?.cooldownActive ?? false;
 
-    const nextEligiblePenaltyAt = latestRecentPunishment
-      ? new Date(
-          new Date(latestRecentPunishment.evaluatedAt).getTime() +
-            PENALTY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
-        ).toISOString()
+    const nextEligiblePenaltyAt = priorSuspensionEndsAt
+      ? priorSuspensionEndsAt.toISOString()
       : existingPunishment?.nextEligiblePenaltyAt;
 
     return {
@@ -863,6 +863,9 @@ export class WeeklyPunishmentService {
       .filter((assessment) => assessment.punishmentApplied)
       .map((assessment) => assessment.eventKey);
     const punishmentApplied = punishedEventKeys.length > 0;
+    const suspensionEndsAt = punishmentApplied
+      ? endOfUtcDay(buildCurrentWeekRange(new Date(evaluatedAt)).weekEnd).toISOString()
+      : nextEligiblePenaltyAt;
     const { markedForRemoval, removalReasonSummary } = buildRemovalMarker(
       member,
       cooldownActive,
@@ -891,10 +894,10 @@ export class WeeklyPunishmentService {
       reasonSummary: buildPunishmentSummary(
         mergedAssessments,
         cooldownActive,
-        nextEligiblePenaltyAt,
+        suspensionEndsAt,
       ),
       removalReasonSummary,
-      nextEligiblePenaltyAt,
+      nextEligiblePenaltyAt: suspensionEndsAt,
       eventsJson: JSON.stringify(mergedAssessments),
     };
   }
@@ -1268,10 +1271,9 @@ export const isWeeklyParticipationWindow = (now = new Date()) => {
   const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
 
   if (weekday === "Sun") {
-    return hour > 5 || (hour === 5 && minute >= 0);
+    return hour > 22 || (hour === 22 && minute >= 0);
   }
-
-  return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].includes(weekday);
+  return false;
 };
 
 export const isDefenseSetupWindow = (now = new Date()) => {
