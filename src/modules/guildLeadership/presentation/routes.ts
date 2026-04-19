@@ -11,6 +11,7 @@ import type {
   GuildCurrentStateDto,
   GuildImportHistoryDetailDto,
   GuildImportHistoryItemDto,
+  LabyrinthCycleDto,
   GuildWeeklyPunishmentDto,
   ImportGuildFilesRequestDto,
 } from "../domain/models";
@@ -54,6 +55,13 @@ type WeeklyPunishmentsReply = {
     skipped: boolean;
     reason: string;
   };
+  error?: string;
+  message?: string;
+};
+
+type LabyrinthCycleReply = {
+  success: boolean;
+  cycle?: LabyrinthCycleDto;
   error?: string;
   message?: string;
 };
@@ -118,6 +126,34 @@ const punishmentsQuerySchema: RouteShorthandOptions = {
   },
 };
 
+const labyrinthCycleUpsertSchema: RouteShorthandOptions = {
+  schema: {
+    body: {
+      type: "object",
+      required: ["entries"],
+      properties: {
+        actualDurationDays: { type: "number", minimum: 0 },
+        requiredAttacksByDay: {
+          type: "array",
+          items: { type: "number", minimum: 0 },
+        },
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["wizardId", "validAttacks"],
+            properties: {
+              wizardId: { type: "number" },
+              memberName: { type: "string" },
+              validAttacks: { type: "number", minimum: 0 },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 const sendImportError = (
   reply: FastifyReply,
   statusCode: number,
@@ -146,7 +182,9 @@ const requireAdminUser = async (
 };
 
 export async function registerGuildLeadershipRoutes(app: FastifyInstance) {
-  const weeklyPunishmentService = new WeeklyPunishmentService(app.guildLeadershipServices.repository);
+  const weeklyPunishmentService = new WeeklyPunishmentService(
+    app.guildLeadershipServices.repository,
+  );
 
   app.get("/health", async () => ({
     success: true,
@@ -285,6 +323,116 @@ export async function registerGuildLeadershipRoutes(app: FastifyInstance) {
           error: "punishments_failed",
           message: error instanceof Error ? error.message : "Unknown error",
         } satisfies WeeklyPunishmentsReply);
+      }
+    },
+  );
+
+  app.get("/api/guild/labyrinth-cycle/current", async (request, reply) => {
+    try {
+      const adminUser = await requireAdminUser(app, request.headers.authorization);
+      if (!adminUser) {
+        return reply.code(403).send({
+          success: false,
+          error: "auth_failed",
+          message: "Apenas líderes e vice-líderes podem consultar o ciclo manual do labirinto.",
+        } satisfies LabyrinthCycleReply);
+      }
+
+      const cycle = await weeklyPunishmentService.getCurrentLabyrinthCycle();
+      return reply.code(200).send({
+        success: true,
+        cycle,
+      } satisfies LabyrinthCycleReply);
+    } catch (error) {
+      request.log.error({ err: error }, "Labyrinth cycle fetch failed");
+      return reply.code(500).send({
+        success: false,
+        error: "labyrinth_cycle_failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      } satisfies LabyrinthCycleReply);
+    }
+  });
+
+  app.put<{
+    Body: {
+      actualDurationDays?: number;
+      requiredAttacksByDay?: number[];
+      entries: Array<{ wizardId: number; memberName?: string; validAttacks: number }>;
+    };
+  }>(
+    "/api/guild/labyrinth-cycle/current",
+    labyrinthCycleUpsertSchema,
+    async (request, reply) => {
+      try {
+        const adminUser = await requireAdminUser(app, request.headers.authorization);
+        if (!adminUser) {
+          return reply.code(403).send({
+            success: false,
+            error: "auth_failed",
+            message: "Apenas líderes e vice-líderes podem editar o ciclo manual do labirinto.",
+          } satisfies LabyrinthCycleReply);
+        }
+
+        const cycle = await weeklyPunishmentService.saveCurrentLabyrinthCycle({
+          actualDurationDays: request.body.actualDurationDays,
+          requiredAttacksByDay: request.body.requiredAttacksByDay,
+          entries: request.body.entries,
+          updatedBy: adminUser.username,
+        });
+
+        return reply.code(200).send({
+          success: true,
+          cycle,
+        } satisfies LabyrinthCycleReply);
+      } catch (error) {
+        request.log.error({ err: error }, "Labyrinth cycle update failed");
+        return reply.code(500).send({
+          success: false,
+          error: "labyrinth_cycle_update_failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        } satisfies LabyrinthCycleReply);
+      }
+    },
+  );
+
+  app.post<{
+    Body: {
+      actualDurationDays?: number;
+      requiredAttacksByDay?: number[];
+      entries: Array<{ wizardId: number; memberName?: string; validAttacks: number }>;
+    };
+  }>(
+    "/api/guild/labyrinth-cycle/current/conclude",
+    labyrinthCycleUpsertSchema,
+    async (request, reply) => {
+      try {
+        const adminUser = await requireAdminUser(app, request.headers.authorization);
+        if (!adminUser) {
+          return reply.code(403).send({
+            success: false,
+            error: "auth_failed",
+            message: "Apenas líderes e vice-líderes podem concluir o ciclo manual do labirinto.",
+          } satisfies LabyrinthCycleReply);
+        }
+
+        const cycle = await weeklyPunishmentService.concludeCurrentLabyrinthCycle({
+          actualDurationDays: request.body.actualDurationDays,
+          requiredAttacksByDay: request.body.requiredAttacksByDay,
+          entries: request.body.entries,
+          updatedBy: adminUser.username,
+        });
+
+        return reply.code(200).send({
+          success: true,
+          cycle,
+        } satisfies LabyrinthCycleReply);
+      } catch (error) {
+        request.log.error({ err: error }, "Labyrinth cycle conclude failed");
+        return reply.code(500).send({
+          success: false,
+          error: "labyrinth_cycle_conclude_failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        } satisfies LabyrinthCycleReply);
       }
     },
   );

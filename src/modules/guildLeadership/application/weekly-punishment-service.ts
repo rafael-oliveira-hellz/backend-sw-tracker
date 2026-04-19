@@ -8,6 +8,8 @@ import type {
   AttackBattleRecordDto,
   GuildCurrentMemberStateDto,
   GuildCurrentStateDto,
+  LabyrinthCycleDto,
+  LabyrinthCycleEntity,
   GuildWeeklyPunishmentDto,
   GuildWeeklyPunishmentEntity,
   WeeklyPunishmentEventAssessmentDto,
@@ -15,7 +17,7 @@ import type {
 } from "../domain/models";
 
 const BRAZIL_TIMEZONE = "America/Sao_Paulo";
-const PENALTY_COOLDOWN_DAYS = 15;
+const PENALTY_COOLDOWN_DAYS = 7;
 const LABYRINTH_FIRST_START_UTC = new Date(Date.UTC(2026, 3, 4));
 const LABYRINTH_CYCLE_DAYS = 15;
 const LABYRINTH_ACTIVE_DAYS = 4;
@@ -41,6 +43,25 @@ type WeeklyPunishmentRunResult = {
   skipped: boolean;
   reason: string;
   evaluationKind: "weeklyParticipation" | "defenseSetup" | "defenseCompliance";
+};
+
+type UpsertCurrentLabyrinthCycleInput = {
+  actualDurationDays?: number;
+  requiredAttacksByDay?: number[];
+  updatedBy?: string;
+  entries: Array<{
+    wizardId: number;
+    memberName?: string;
+    validAttacks: number;
+  }>;
+};
+
+type MemberWeekEntryRules = {
+  joinedAt?: string;
+  joinedThisWeek: boolean;
+  joinedWeekday?: number;
+  exemptGuildWarAndSiege: boolean;
+  subjugationRequired: boolean;
 };
 
 const toOptionalNumber = (value: unknown): number | undefined => {
@@ -88,6 +109,9 @@ const addUtcDays = (date: Date, days: number) => {
   copy.setUTCDate(copy.getUTCDate() + days);
   return copy;
 };
+
+const differenceInUtcDays = (left: Date, right: Date) =>
+  Math.floor((left.getTime() - right.getTime()) / (24 * 60 * 60 * 1000));
 
 const startOfUtcWeekSunday = (date: Date) => {
   const copy = new Date(date.getTime());
@@ -194,20 +218,17 @@ const filterAttacksByWeekdays = (attacks: AttackBattleRecordDto[], weekdays: num
     return attackDate ? weekdays.includes(attackDate.getUTCDay()) : false;
   });
 
-const memberDidLabyrinth = (member: GuildCurrentMemberStateDto) =>
-  Boolean(
-    (member.labyrinth.score ?? 0) > 0 ||
-      (member.labyrinth.contributionRate ?? 0) > 0 ||
-      member.labyrinth.isMvp,
-  );
+const buildLabyrinthCycleStartDate = (now: Date) => {
+  const brazilToday = createUtcDate(getBrazilCalendarDate(now));
+  const diffInDays = differenceInUtcDays(brazilToday, LABYRINTH_FIRST_START_UTC);
+  const completedCycles = diffInDays >= 0 ? Math.floor(diffInDays / LABYRINTH_CYCLE_DAYS) : 0;
 
-const memberDidSubjugation = (member: GuildCurrentMemberStateDto) =>
-  Boolean(
-    (member.subjugation.clearScore ?? 0) > 0 ||
-      (member.subjugation.contributeRatio ?? 0) > 0,
-  );
+  return addUtcDays(LABYRINTH_FIRST_START_UTC, completedCycles * LABYRINTH_CYCLE_DAYS);
+};
 
-const isLabyrinthActiveDuringWeek = (weekStart: Date, weekEnd: Date) => {
+const listLabyrinthCycleStartsForWeek = (weekStart: Date, weekEnd: Date) => {
+  const starts: Date[] = [];
+
   for (
     let cycleStart = new Date(LABYRINTH_FIRST_START_UTC.getTime());
     cycleStart <= addUtcDays(weekEnd, LABYRINTH_CYCLE_DAYS);
@@ -215,12 +236,31 @@ const isLabyrinthActiveDuringWeek = (weekStart: Date, weekEnd: Date) => {
   ) {
     const cycleEnd = addUtcDays(cycleStart, LABYRINTH_ACTIVE_DAYS - 1);
     if (cycleStart <= weekEnd && cycleEnd >= weekStart) {
-      return true;
+      starts.push(new Date(cycleStart.getTime()));
     }
   }
 
-  return false;
+  return starts;
 };
+
+const buildDefaultRequiredAttacksByDay = (days: number) =>
+  Array.from({ length: Math.max(0, days) }, () => 1);
+
+const normalizeRequiredAttacksByDay = (input: number[] | undefined, days: number) => {
+  const normalizedDays = Math.max(0, Math.trunc(days));
+  const source = input ?? [];
+
+  return Array.from({ length: normalizedDays }, (_, index) => {
+    const value = source[index];
+    return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+  });
+};
+
+const memberDidSubjugation = (member: GuildCurrentMemberStateDto) =>
+  Boolean(
+    (member.subjugation.clearScore ?? 0) > 0 ||
+      (member.subjugation.contributeRatio ?? 0) > 0,
+  );
 
 const buildReason = (
   label: string,
@@ -296,40 +336,77 @@ const memberWasAssignedToGuildWar = (member: GuildCurrentMemberStateDto) =>
 
 const buildRemovalMarker = (
   member: GuildCurrentMemberStateDto,
-  week: WeekRange,
-  punishmentApplied: boolean,
+  cooldownActive: boolean,
+  assessments: WeeklyPunishmentEventAssessmentDto[],
 ) => {
-  if (!punishmentApplied) {
+  const defenseViolationWhileSuspended = assessments.some(
+    (assessment) =>
+      (assessment.eventKey === "guildWarDefenseCompliance" ||
+        assessment.eventKey === "siegeDefenseCompliance") &&
+      assessment.required &&
+      assessment.completed < assessment.expected,
+  );
+
+  if (cooldownActive && defenseViolationWhileSuspended) {
+    return {
+      markedForRemoval: true,
+      removalReasonSummary:
+        "Marcado para remo\u00e7\u00e3o: membro em cooldown manteve defesa irregular ap\u00f3s o prazo de corre\u00e7\u00e3o.",
+    };
+  }
+
+  if (!cooldownActive || memberDidSubjugation(member)) {
     return {
       markedForRemoval: false,
       removalReasonSummary: undefined,
     };
   }
 
-  const reasons: string[] = [];
-  const subjugationCompleted = memberDidSubjugation(member);
-  const labyrinthRequired = isLabyrinthActiveDuringWeek(week.weekStart, week.weekEnd);
-  const labyrinthCompleted = memberDidLabyrinth(member);
+  return {
+    markedForRemoval: true,
+    removalReasonSummary:
+      "Marcado para remo\u00e7\u00e3o: membro suspenso na semana anterior e sem participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o desta semana.",
+  };
+};
+const memberWasAssignedToSiege = (member: GuildCurrentMemberStateDto) =>
+  member.siege.defenses.length > 0 || member.coverage.siegeAttacks || member.coverage.siegeDefenses;
 
-  if (!subjugationCompleted) {
-    reasons.push("Sem ataque registrado na subjugação durante a semana de punição.");
+const getMemberWeekEntryRules = (
+  joinedAt: string | undefined,
+  week: WeekRange,
+): MemberWeekEntryRules => {
+  if (!joinedAt) {
+    return {
+      joinedAt: undefined,
+      joinedThisWeek: false,
+      joinedWeekday: undefined,
+      exemptGuildWarAndSiege: false,
+      subjugationRequired: true,
+    };
   }
 
-  if (labyrinthRequired && !labyrinthCompleted) {
-    reasons.push("Lab aberto na semana de punição e sem ataque registrado no labirinto.");
+  const joinedDate = createUtcDate(getBrazilCalendarDate(new Date(joinedAt)));
+  const joinedThisWeek = joinedDate >= week.weekStart && joinedDate <= week.weekEnd;
+  const joinedWeekday = joinedDate.getUTCDay();
+
+  if (!joinedThisWeek) {
+    return {
+      joinedAt,
+      joinedThisWeek: false,
+      joinedWeekday,
+      exemptGuildWarAndSiege: false,
+      subjugationRequired: true,
+    };
   }
 
   return {
-    markedForRemoval: reasons.length > 0,
-    removalReasonSummary:
-      reasons.length > 0
-        ? `Marcado para remoção: ${reasons.join(" ")}`
-        : undefined,
+    joinedAt,
+    joinedThisWeek: true,
+    joinedWeekday,
+    exemptGuildWarAndSiege: joinedWeekday >= 1 && joinedWeekday <= 5,
+    subjugationRequired: joinedWeekday <= 3,
   };
 };
-
-const memberWasAssignedToSiege = (member: GuildCurrentMemberStateDto) =>
-  member.siege.defenses.length > 0 || member.coverage.siegeAttacks || member.coverage.siegeDefenses;
 
 const formatDefenseLocation = (
   context: "guildWar" | "siege",
@@ -389,8 +466,7 @@ export class WeeklyPunishmentService {
       evaluatedAtFrom: addUtcDays(week.weekStart, -PENALTY_COOLDOWN_DAYS).toISOString(),
     });
     const existing = await this.repository.listWeeklyPunishments({ weekKey: week.weekKey });
-
-    const entities = this.buildParticipationPunishmentEntities(
+    const entities = await this.buildParticipationPunishmentEntities(
       currentState,
       week,
       now.toISOString(),
@@ -429,7 +505,6 @@ export class WeeklyPunishmentService {
       evaluatedAtFrom: addUtcDays(week.weekStart, -PENALTY_COOLDOWN_DAYS).toISOString(),
     });
     const existing = await this.repository.listWeeklyPunishments({ weekKey: week.weekKey });
-
     const entities = this.buildDefenseSetupPunishmentEntities(
       currentState,
       week,
@@ -452,6 +527,135 @@ export class WeeklyPunishmentService {
 
   async listWeeklyPunishments(weekKey?: string) {
     return this.repository.listWeeklyPunishments({ weekKey });
+  }
+
+  async getCurrentLabyrinthCycle(now = new Date()): Promise<LabyrinthCycleDto> {
+    const currentState = await this.repository.findLatestCurrentState();
+    const cycleStartDate = formatBrazilDate(buildLabyrinthCycleStartDate(now));
+    const existingCycle = await this.repository.findLabyrinthCycleByStartDate({
+      guildId: currentState?.guildId,
+      cycleStartDate,
+    });
+
+    return (
+      existingCycle ?? {
+        guildId: currentState?.guildId,
+        guildName: currentState?.guildName,
+        cycleStartDate,
+        expectedDurationDays: LABYRINTH_ACTIVE_DAYS,
+        requiredAttacksByDay: buildDefaultRequiredAttacksByDay(LABYRINTH_ACTIVE_DAYS),
+        actualDurationDays: undefined,
+        isConcluded: false,
+        concludedAt: undefined,
+        concludedBy: undefined,
+        updatedAt: currentState?.updatedAt ?? now.toISOString(),
+        updatedBy: undefined,
+        entries: [],
+      }
+    );
+  }
+
+  async saveCurrentLabyrinthCycle(
+    input: UpsertCurrentLabyrinthCycleInput,
+    now = new Date(),
+  ): Promise<LabyrinthCycleDto> {
+    const currentState = await this.repository.findLatestCurrentState();
+    const cycle = await this.getCurrentLabyrinthCycle(now);
+    const memberNameByWizardId = new Map(
+      (currentState?.members ?? []).map((member) => [member.wizardId, member.member.wizardName]),
+    );
+
+    const nextEntries = input.entries
+      .map((entry) => ({
+        wizardId: entry.wizardId,
+        memberName:
+          entry.memberName ??
+          memberNameByWizardId.get(entry.wizardId) ??
+          cycle.entries.find((savedEntry) => savedEntry.wizardId === entry.wizardId)?.memberName ??
+          `Wizard ${entry.wizardId}`,
+        validAttacks: Math.max(0, Math.trunc(entry.validAttacks)),
+        updatedAt: now.toISOString(),
+        updatedBy: input.updatedBy,
+      }))
+      .filter((entry) => entry.validAttacks > 0)
+      .sort((left, right) => left.memberName.localeCompare(right.memberName, "pt-BR"));
+    const actualDurationDays = Math.max(
+      0,
+      Math.trunc(input.actualDurationDays ?? cycle.actualDurationDays ?? cycle.expectedDurationDays),
+    );
+    const requiredAttacksByDay = normalizeRequiredAttacksByDay(
+      input.requiredAttacksByDay ?? cycle.requiredAttacksByDay,
+      actualDurationDays,
+    );
+
+    const entity: LabyrinthCycleEntity = {
+      id: `${currentState?.guildId ?? cycle.guildId ?? "unknown"}:${cycle.cycleStartDate}`,
+      createdAt: cycle.updatedAt,
+      updatedAt: now.toISOString(),
+      guildId: currentState?.guildId ?? cycle.guildId,
+      guildName: currentState?.guildName ?? cycle.guildName,
+      cycleStartDate: cycle.cycleStartDate,
+      expectedDurationDays: LABYRINTH_ACTIVE_DAYS,
+      requiredAttacksByDayJson: JSON.stringify(requiredAttacksByDay),
+      actualDurationDays,
+      isConcluded: cycle.isConcluded,
+      concludedAt: cycle.concludedAt,
+      concludedBy: cycle.concludedBy,
+      updatedBy: input.updatedBy,
+      entriesJson: JSON.stringify(nextEntries),
+    };
+
+    await this.repository.saveLabyrinthCycle(entity);
+
+    return {
+      guildId: entity.guildId,
+      guildName: entity.guildName,
+      cycleStartDate: entity.cycleStartDate,
+      expectedDurationDays: entity.expectedDurationDays,
+      requiredAttacksByDay,
+      actualDurationDays: entity.actualDurationDays,
+      isConcluded: entity.isConcluded,
+      concludedAt: entity.concludedAt,
+      concludedBy: entity.concludedBy,
+      updatedAt: entity.updatedAt,
+      updatedBy: entity.updatedBy,
+      entries: nextEntries,
+    };
+  }
+
+  async concludeCurrentLabyrinthCycle(
+    input: UpsertCurrentLabyrinthCycleInput,
+    now = new Date(),
+  ): Promise<LabyrinthCycleDto> {
+    const savedCycle = await this.saveCurrentLabyrinthCycle(input, now);
+
+    const entity: LabyrinthCycleEntity = {
+      id: `${savedCycle.guildId ?? "unknown"}:${savedCycle.cycleStartDate}`,
+      createdAt: savedCycle.updatedAt,
+      updatedAt: now.toISOString(),
+      guildId: savedCycle.guildId,
+      guildName: savedCycle.guildName,
+      cycleStartDate: savedCycle.cycleStartDate,
+      expectedDurationDays: savedCycle.expectedDurationDays,
+      requiredAttacksByDayJson: JSON.stringify(savedCycle.requiredAttacksByDay),
+      actualDurationDays: savedCycle.actualDurationDays,
+      isConcluded: true,
+      concludedAt: now.toISOString(),
+      concludedBy: input.updatedBy,
+      updatedBy: input.updatedBy,
+      entriesJson: JSON.stringify(savedCycle.entries),
+    };
+
+    await this.repository.saveLabyrinthCycle(entity);
+
+    return {
+      ...savedCycle,
+      isConcluded: true,
+      concludedAt: entity.concludedAt,
+      concludedBy: entity.concludedBy,
+      updatedAt: entity.updatedAt,
+      updatedBy: entity.updatedBy,
+    };
   }
 
   async runDefenseComplianceEvaluation(now = new Date()): Promise<WeeklyPunishmentRunResult> {
@@ -529,14 +733,14 @@ export class WeeklyPunishmentService {
     };
   }
 
-  private buildParticipationPunishmentEntities(
+  private async buildParticipationPunishmentEntities(
     currentState: GuildCurrentStateDto,
     week: WeekRange,
     evaluatedAt: string,
     recentPunishments: GuildWeeklyPunishmentDto[],
     existing: GuildWeeklyPunishmentDto[],
-  ): GuildWeeklyPunishmentEntity[] {
-    return currentState.members.map((member) => {
+  ): Promise<GuildWeeklyPunishmentEntity[]> {
+    return Promise.all(currentState.members.map(async (member) => {
       const existingPunishment = existing.find((entry) => entry.wizardId === member.wizardId);
       const { cooldownActive, nextEligiblePenaltyAt } = this.resolveCooldown(
         member,
@@ -545,11 +749,12 @@ export class WeeklyPunishmentService {
         existingPunishment,
       );
 
-      const incomingAssessments = this.buildParticipationAssessments(
+      const incomingAssessments = await this.buildParticipationAssessments(
         member,
         week,
         cooldownActive,
         nextEligiblePenaltyAt,
+        member.member.joinedAt,
       );
 
       return this.buildEntityFromAssessments(
@@ -562,7 +767,7 @@ export class WeeklyPunishmentService {
         existingPunishment,
         incomingAssessments,
       );
-    });
+    }));
   }
 
   private buildDefenseSetupPunishmentEntities(
@@ -585,6 +790,8 @@ export class WeeklyPunishmentService {
         member,
         cooldownActive,
         nextEligiblePenaltyAt,
+        week,
+        member.member.joinedAt,
       );
 
       return this.buildEntityFromAssessments(
@@ -649,8 +856,8 @@ export class WeeklyPunishmentService {
     const punishmentApplied = punishedEventKeys.length > 0;
     const { markedForRemoval, removalReasonSummary } = buildRemovalMarker(
       member,
-      week,
-      punishmentApplied,
+      cooldownActive,
+      mergedAssessments,
     );
 
     return {
@@ -683,13 +890,16 @@ export class WeeklyPunishmentService {
     };
   }
 
-  private buildParticipationAssessments(
+  private async buildParticipationAssessments(
     member: GuildCurrentMemberStateDto,
     week: WeekRange,
     cooldownActive: boolean,
     nextEligiblePenaltyAt?: string,
-  ): WeeklyPunishmentEventAssessmentDto[] {
-    const guildWarAssigned = memberWasAssignedToGuildWar(member);
+    joinedAt?: string,
+  ): Promise<WeeklyPunishmentEventAssessmentDto[]> {
+    const entryRules = getMemberWeekEntryRules(joinedAt, week);
+    const guildWarAssigned =
+      !entryRules.exemptGuildWarAndSiege && memberWasAssignedToGuildWar(member);
     const guildWarWeekAttacks = filterAttacksToWeek(
       member.guildWar.attacks ?? [],
       week.weekStart,
@@ -703,7 +913,8 @@ export class WeeklyPunishmentService {
     const guildWarExpected = guildWarAssigned ? 4 : 0;
     const guildWarWouldPunish = guildWarAssigned && guildWarCompleted < guildWarExpected;
 
-    const siegeAssigned = memberWasAssignedToSiege(member);
+    const siegeAssigned =
+      !entryRules.exemptGuildWarAndSiege && memberWasAssignedToSiege(member);
     const siegeWeekAttacks = filterAttacksToWeek(
       member.siege.attacks ?? [],
       week.weekStart,
@@ -715,16 +926,20 @@ export class WeeklyPunishmentService {
     const siegeExpected = siegeAssigned ? 60 : 0;
     const siegeWouldPunish = siegeAssigned && (siegeOne < 30 || siegeTwo < 30);
 
-    const labyrinthRequired = isLabyrinthActiveDuringWeek(week.weekStart, week.weekEnd);
-    const labyrinthCompleted = memberDidLabyrinth(member) ? 1 : 0;
-    const labyrinthWouldPunish = labyrinthRequired && labyrinthCompleted < 1;
-
     const subjugationCompleted = memberDidSubjugation(member) ? 1 : 0;
-    const subjugationWouldPunish = subjugationCompleted < 1;
+    const subjugationRequired = entryRules.subjugationRequired;
+    const subjugationWouldPunish = subjugationRequired && subjugationCompleted < 1;
 
     const cooldownReason = cooldownActive
-      ? `Isento nesta semana por punição anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponível"}.`
+      ? `Isento nesta semana por puni\u00e7\u00e3o anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indispon\u00edvel"}.`
       : undefined;
+    const labyrinthAssessment = await this.buildLabyrinthAssessmentForWeek(
+      member,
+      week,
+      cooldownActive,
+      nextEligiblePenaltyAt,
+      joinedAt,
+    );
 
     return [
       createAssessment(
@@ -736,16 +951,18 @@ export class WeeklyPunishmentService {
         guildWarWouldPunish && !cooldownActive,
         cooldownReason ??
           (!guildWarAssigned
-            ? "Sem escalação registrada em GW no snapshot usado para avaliação."
+            ? entryRules.exemptGuildWarAndSiege
+              ? "Membro entrou entre segunda e sexta-feira; GW n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
+              : "Sem escala\u00e7\u00e3o registrada em GW no snapshot usado para avalia\u00e7\u00e3o."
             : guildWarWouldPunish
               ? buildReason(
-                  "GW obrigatória não concluída",
+                  "GW obrigat\u00f3ria n\u00e3o conclu\u00edda",
                   guildWarCompleted,
                   guildWarExpected,
                   `GW 1: ${guildWarEntriesOne}/2 entradas, GW 2: ${guildWarEntriesTwo}/2 entradas`,
                 )
               : buildReason(
-                  "GW concluída",
+                  "GW conclu\u00edda",
                   guildWarCompleted,
                   guildWarExpected,
                   `GW 1: ${guildWarEntriesOne}/2 entradas, GW 2: ${guildWarEntriesTwo}/2 entradas`,
@@ -760,66 +977,150 @@ export class WeeklyPunishmentService {
         siegeWouldPunish && !cooldownActive,
         cooldownReason ??
           (!siegeAssigned
-            ? "Sem participação elegível registrada em siege no snapshot usado para avaliação."
+            ? entryRules.exemptGuildWarAndSiege
+              ? "Membro entrou entre segunda e sexta-feira; Siege n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
+              : "Sem participa\u00e7\u00e3o eleg\u00edvel registrada em siege no snapshot usado para avalia\u00e7\u00e3o."
             : siegeWouldPunish
               ? buildReason(
-                  "Assalto obrigatório não concluído",
+                  "Assalto obrigat\u00f3rio n\u00e3o conclu\u00eddo",
                   siegeCompleted,
                   siegeExpected,
                   `Siege 1: ${siegeOne}/30 ataques, Siege 2: ${siegeTwo}/30 ataques`,
                 )
               : buildReason(
-                  "Assalto concluído",
+                  "Assalto conclu\u00eddo",
                   siegeCompleted,
                   siegeExpected,
                   `Siege 1: ${siegeOne}/30 ataques, Siege 2: ${siegeTwo}/30 ataques`,
                 )),
       ),
-      createAssessment(
-        "labyrinth",
-        "Labirinto",
-        labyrinthRequired,
-        labyrinthCompleted,
-        labyrinthRequired ? 1 : 0,
-        labyrinthWouldPunish && !cooldownActive,
-        cooldownReason ??
-          (!labyrinthRequired
-            ? "Labirinto não esteve ativo nesta semana."
-            : labyrinthCompleted > 0
-              ? "Participação registrada no labirinto do ciclo."
-              : "Sem participação registrada no labirinto ativo da semana."),
-      ),
+      labyrinthAssessment,
       createAssessment(
         "subjugation",
-        "Subjugação",
-        true,
+        "Subjuga\u00e7\u00e3o",
+        subjugationRequired,
         subjugationCompleted,
-        1,
+        subjugationRequired ? 1 : 0,
         subjugationWouldPunish && !cooldownActive,
         cooldownReason ??
-          (subjugationCompleted > 0
-            ? "Participação registrada na subjugação da semana."
-            : "Sem participação registrada na subjugação obrigatória da semana."),
+          (!subjugationRequired
+            ? "Membro entrou ap\u00f3s quarta-feira; subjuga\u00e7\u00e3o n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
+            : subjugationCompleted > 0
+              ? "Participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o da semana."
+              : "Sem participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o obrigat\u00f3ria da semana."),
       ),
     ];
+  }
+  private async buildLabyrinthAssessmentForWeek(
+    member: GuildCurrentMemberStateDto,
+    week: WeekRange,
+    cooldownActive: boolean,
+    nextEligiblePenaltyAt?: string,
+    joinedAt?: string,
+  ): Promise<WeeklyPunishmentEventAssessmentDto> {
+    const entryRules = getMemberWeekEntryRules(joinedAt, week);
+    const cooldownReason = cooldownActive
+      ? `Isento nesta semana por punição anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponível"}.`
+      : undefined;
+    const cycleStarts = listLabyrinthCycleStartsForWeek(week.weekStart, week.weekEnd);
+
+    if (cycleStarts.length === 0) {
+      return createAssessment(
+        "labyrinth",
+        "Labirinto",
+        false,
+        0,
+        0,
+        false,
+        cooldownReason ?? "Labirinto não esteve ativo nesta semana.",
+      );
+    }
+
+    const cycleStartDate = formatBrazilDate(cycleStarts[0]);
+    const cycle = await this.repository.findLabyrinthCycleByStartDate({
+      guildId: member.guildId,
+      cycleStartDate,
+    });
+
+    if (!cycle) {
+      return createAssessment(
+        "labyrinth",
+        "Labirinto",
+        false,
+        0,
+        0,
+        false,
+        cooldownReason ??
+          `Labirinto do ciclo ${cycleStartDate} ainda não foi fechado pela liderança; sem punição automática.`,
+      );
+    }
+
+    const actualDurationDays = Math.max(
+      0,
+      Math.trunc(cycle.actualDurationDays ?? cycle.expectedDurationDays),
+    );
+    const joinedDate = joinedAt
+      ? createUtcDate(getBrazilCalendarDate(new Date(joinedAt)))
+      : undefined;
+    const cycleStart = createUtcDate(
+      getBrazilCalendarDate(new Date(`${cycle.cycleStartDate}T00:00:00Z`)),
+    );
+    const exemptBecauseJoinedAfterCycleStart =
+      entryRules.joinedThisWeek &&
+      entryRules.exemptGuildWarAndSiege &&
+      joinedDate !== undefined &&
+      joinedDate > cycleStart;
+    const requiredAttacksByDay = normalizeRequiredAttacksByDay(
+      cycle.requiredAttacksByDay,
+      actualDurationDays,
+    );
+    const validAttacks =
+      cycle.entries.find((entry) => entry.wizardId === member.wizardId)?.validAttacks ?? 0;
+    const minimumRequiredAttacks = requiredAttacksByDay.reduce((sum, value) => sum + value, 0);
+    const required =
+      cycle.isConcluded && minimumRequiredAttacks > 0 && !exemptBecauseJoinedAfterCycleStart;
+    const wouldPunish = required && validAttacks < minimumRequiredAttacks;
+    const details = `Ciclo ${cycle.cycleStartDate} • válidos ${validAttacks}/${minimumRequiredAttacks} • dias ${requiredAttacksByDay.join("/") || "0"}`;
+
+    return createAssessment(
+      "labyrinth",
+      "Labirinto",
+      required,
+      validAttacks,
+      required ? minimumRequiredAttacks : 0,
+      wouldPunish && !cooldownActive,
+      cooldownReason ??
+        (!cycle.isConcluded
+          ? `Labirinto do ciclo ${cycle.cycleStartDate} ainda está em edição pela liderança.`
+          : wouldPunish
+            ? buildReason("Labirinto abaixo do mínimo", validAttacks, minimumRequiredAttacks, details)
+            : buildReason("Labirinto validado", validAttacks, minimumRequiredAttacks, details)),
+    );
   }
 
   private buildDefenseSetupAssessments(
     member: GuildCurrentMemberStateDto,
     cooldownActive: boolean,
     nextEligiblePenaltyAt?: string,
+    week?: WeekRange,
+    joinedAt?: string,
   ): WeeklyPunishmentEventAssessmentDto[] {
-    const guildWarAssigned = memberWasAssignedToGuildWar(member);
+    const entryRules = week
+      ? getMemberWeekEntryRules(joinedAt, week)
+      : { exemptGuildWarAndSiege: false };
+    const guildWarAssigned =
+      !entryRules.exemptGuildWarAndSiege && memberWasAssignedToGuildWar(member);
     const guildWarDefenseCount = member.guildWar.defenses.length;
     const guildWarWouldPunish =
       guildWarAssigned && guildWarDefenseCount < GUILD_WAR_REQUIRED_DEFENSES;
 
-    const siegeAssigned = memberWasAssignedToSiege(member);
+    const siegeAssigned =
+      !entryRules.exemptGuildWarAndSiege && memberWasAssignedToSiege(member);
     const siegeDefenseCount = member.siege.defenses.length;
     const siegeWouldPunish = siegeAssigned && siegeDefenseCount < SIEGE_REQUIRED_DEFENSES;
 
     const cooldownReason = cooldownActive
-      ? `Isento nesta semana por punição anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponível"}.`
+      ? `Isento nesta semana por puni\u00e7\u00e3o anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indispon\u00edvel"}.`
       : undefined;
 
     return [
@@ -832,19 +1133,21 @@ export class WeeklyPunishmentService {
         guildWarWouldPunish && !cooldownActive,
         cooldownReason ??
           (!guildWarAssigned
-            ? "Sem escalação registrada em GW para exigir defesa nesta semana."
+            ? entryRules.exemptGuildWarAndSiege
+              ? "Membro entrou entre segunda e sexta-feira; setup de GW n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
+              : "Sem escala\u00e7\u00e3o registrada em GW para exigir defesa nesta semana."
             : guildWarWouldPunish
               ? buildReason(
-                  "GW sem todas as defesas obrigatórias",
+                  "GW sem todas as defesas obrigat\u00f3rias",
                   guildWarDefenseCount,
                   GUILD_WAR_REQUIRED_DEFENSES,
-                  "Mínimo exigido até segunda-feira 12:00 de Brasília",
+                  "M\u00ednimo exigido at\u00e9 segunda-feira 12:00 de Bras\u00edlia",
                 )
               : buildReason(
                   "GW com defesas completas",
                   guildWarDefenseCount,
                   GUILD_WAR_REQUIRED_DEFENSES,
-                  "Mínimo exigido até segunda-feira 12:00 de Brasília",
+                  "M\u00ednimo exigido at\u00e9 segunda-feira 12:00 de Bras\u00edlia",
                 )),
       ),
       createAssessment(
@@ -856,24 +1159,25 @@ export class WeeklyPunishmentService {
         siegeWouldPunish && !cooldownActive,
         cooldownReason ??
           (!siegeAssigned
-            ? "Sem participação elegível registrada em siege para exigir defesa nesta semana."
+            ? entryRules.exemptGuildWarAndSiege
+              ? "Membro entrou entre segunda e sexta-feira; setup de Siege n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
+              : "Sem participa\u00e7\u00e3o eleg\u00edvel registrada em siege para exigir defesa nesta semana."
             : siegeWouldPunish
               ? buildReason(
-                  "Siege abaixo do mínimo de defesas",
+                  "Siege abaixo do m\u00ednimo de defesas",
                   siegeDefenseCount,
                   SIEGE_REQUIRED_DEFENSES,
-                  "Mínimo exigido até segunda-feira 12:00 de Brasília",
+                  "M\u00ednimo exigido at\u00e9 segunda-feira 12:00 de Bras\u00edlia",
                 )
               : buildReason(
                   "Siege com defesas suficientes",
                   siegeDefenseCount,
                   SIEGE_REQUIRED_DEFENSES,
-                  "Mínimo exigido até segunda-feira 12:00 de Brasília",
+                  "M\u00ednimo exigido at\u00e9 segunda-feira 12:00 de Bras\u00edlia",
                 )),
       ),
     ];
   }
-
   private buildDefenseComplianceAssessments(
     member: GuildCurrentMemberStateDto,
     phase: "warning" | "punishment",

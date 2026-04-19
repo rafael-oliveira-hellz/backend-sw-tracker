@@ -39,6 +39,7 @@ export interface DefenseUnitEquipmentDto {
   unitId?: number;
   unitMasterId?: number;
   position?: number;
+  unitLevel?: number;
   monsterName: string;
   equippedRunesCount?: number;
   expectedRunesCount?: number;
@@ -64,6 +65,7 @@ export interface DefenseComplianceIssueDto {
     | "sameElementTeam"
     | "allBelowFiveStarsTeam"
     | "allNaturalFourTeam"
+    | "belowLevelForty"
     | "missingRunes"
     | "missingArtifacts";
   summary: string;
@@ -90,6 +92,7 @@ export interface DefenseDeckSummaryDto {
   assignedBase?: number;
   round?: number;
   ratingId?: number;
+  unitIds?: number[];
   team: TeamCompositionDto;
   wins?: number;
   losses?: number;
@@ -136,6 +139,7 @@ export interface MemberProfileDto {
   channelUid?: number;
   level?: number;
   ratingId?: number;
+  joinedAt?: string;
   guildId?: number;
   guildName?: string;
   guildRole?: "member" | "senior" | "vice-leader" | "leader";
@@ -279,6 +283,7 @@ export interface GuildDefenseDeckDto {
   assignedBase?: number;
   round?: number;
   ratingId?: number;
+  unitIds?: number[];
   source: string;
   teamSignature: string;
   teamLabel: string;
@@ -529,6 +534,7 @@ export interface GuildDefenseDeckEntity extends BaseEntity {
   assignedBase?: number;
   round?: number;
   ratingId?: number;
+  unitIdsJson?: string;
   source: string;
   teamSignature: string;
   teamLabel: string;
@@ -728,6 +734,7 @@ export function mapDtoToEntities(
       assignedBase: defense.assignedBase,
       round: defense.round,
       ratingId: defense.ratingId,
+      unitIdsJson: defense.unitIds ? JSON.stringify(defense.unitIds) : undefined,
       source: defense.source,
     teamSignature: defense.teamSignature,
     teamLabel: defense.teamLabel,

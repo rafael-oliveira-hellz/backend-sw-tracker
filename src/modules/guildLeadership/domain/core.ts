@@ -53,6 +53,7 @@ export type DefenseUnitEquipment = {
   unitId?: number;
   unitMasterId?: number;
   position?: number;
+  unitLevel?: number;
   monsterName: string;
   equippedRunesCount?: number;
   expectedRunesCount?: number;
@@ -78,6 +79,7 @@ export type DefenseComplianceIssue = {
     | "sameElementTeam"
     | "allBelowFiveStarsTeam"
     | "allNaturalFourTeam"
+    | "belowLevelForty"
     | "missingRunes"
     | "missingArtifacts";
   summary: string;
@@ -104,6 +106,7 @@ export type DefenseDeckSummary = {
   assignedBase?: number;
   round?: number;
   ratingId?: number;
+  unitIds?: number[];
   team: TeamComposition;
   wins?: number;
   losses?: number;
@@ -171,6 +174,7 @@ export type MemberLeadershipPayload = {
     channelUid?: number;
     level?: number;
     ratingId?: number;
+    joinedAt?: string;
     guildId?: number;
     guildName?: string;
     guildRole?: GuildMemberRole;
@@ -434,7 +438,12 @@ const createDefenseComplianceAudit = (
     .map((monsterId) => getMonsterElement(monsterId))
     .filter((element): element is NonNullable<ReturnType<typeof getMonsterElement>> => Boolean(element));
 
-  if (elements.length === team.monsters.length && elements.length > 0 && elements.every((element) => element === elements[0])) {
+  if (
+    elements.length === team.monsters.length &&
+    elements.length > 0 &&
+    elements.every((element) => element === elements[0]) &&
+    !["light", "dark"].includes(elements[0])
+  ) {
     issues.push({
       code: "sameElementTeam",
       summary: `Os 3 monstros da defesa são do mesmo elemento (${describeElement(elements[0])}).`,
@@ -460,10 +469,19 @@ const createDefenseComplianceAudit = (
   }
 
   for (const unit of equipmentAudit?.units ?? []) {
+    if ((unit.unitLevel ?? 40) < 40) {
+      issues.push({
+        code: "belowLevelForty",
+        summary: `${unit.monsterName} est\u00e1 abaixo do n\u00edvel 40 (${unit.unitLevel ?? 0}/40).`,
+        monsterNames: [unit.monsterName],
+        affectedMonsterName: unit.monsterName,
+      });
+    }
+
     if ((unit.missingRunesCount ?? 0) > 0) {
       issues.push({
         code: "missingRunes",
-        summary: `${unit.monsterName} está sem ${unit.missingRunesCount} runa(s).`,
+        summary: `${unit.monsterName} est\u00e1 com ${unit.equippedRunesCount ?? 0}/${unit.expectedRunesCount ?? 6} runas.`,
         monsterNames: [unit.monsterName],
         affectedMonsterName: unit.monsterName,
         missingRuneSlots: unit.missingRuneSlots,
@@ -473,7 +491,7 @@ const createDefenseComplianceAudit = (
     if ((unit.missingArtifactsCount ?? 0) > 0) {
       issues.push({
         code: "missingArtifacts",
-        summary: `${unit.monsterName} está sem ${unit.missingArtifactsCount} artefato(s).`,
+        summary: `${unit.monsterName} est\u00e1 com ${unit.equippedArtifactsCount ?? 0}/${unit.expectedArtifactsCount ?? 2} artefatos.`,
         monsterNames: [unit.monsterName],
         affectedMonsterName: unit.monsterName,
         missingArtifactSlots: unit.missingArtifactSlots,
@@ -495,6 +513,7 @@ const createSiegeEquipmentAudit = (
     unitId?: number;
     unitMasterId?: number;
     position?: number;
+    unitLevel?: number;
   }>,
   equipSummaryByUnitId: Map<number, number[]>,
 ): DefenseEquipmentAudit => {
@@ -514,6 +533,7 @@ const createSiegeEquipmentAudit = (
       unitId: unit.unitId,
       unitMasterId: unit.unitMasterId,
       position: unit.position,
+      unitLevel: unit.unitLevel,
       monsterName: formatMonsterName(unit.unitMasterId ?? 0),
       equippedRunesCount,
       expectedRunesCount,
@@ -529,18 +549,7 @@ const createSiegeEquipmentAudit = (
     };
   });
 
-  const issuesCount = detailedUnits.filter(
-    (unit) => (unit.missingRunesCount ?? 0) > 0 || (unit.missingArtifactsCount ?? 0) > 0,
-  ).length;
-  const status: DefenseEquipmentAudit["status"] = issuesCount > 0 ? "incomplete" : "ok";
-
-  return {
-    status,
-    canIdentifySlots: false,
-    summary: buildEquipmentSummary(detailedUnits, status),
-    issuesCount,
-    units: detailedUnits,
-  };
+  return createEquipmentAuditFromUnits(detailedUnits);
 };
 
 const roundWinRate = (wins: number, losses: number, draws: number) =>
@@ -685,6 +694,7 @@ const mergeDefenseDeckSummary = (
   assignedBase: incoming.assignedBase ?? existing.assignedBase,
   round: incoming.round ?? existing.round,
   ratingId: incoming.ratingId ?? existing.ratingId,
+  unitIds: incoming.unitIds?.length ? incoming.unitIds : existing.unitIds,
   team: incoming.team.monsters.length > 0 ? incoming.team : existing.team,
   wins: incoming.wins ?? existing.wins,
   losses: incoming.losses ?? existing.losses,
@@ -756,6 +766,47 @@ const sortAndLimitDefenses = (
       );
     })
     .slice(0, maxDecks);
+
+const propagateSharedEquipmentAudits = (members: Map<number, MemberAccumulator>) => {
+  for (const member of members.values()) {
+    const siegeIssueByUnitId = new Map<number, DefenseUnitEquipment>();
+
+    for (const defense of member.siegeDefenses) {
+      for (const unit of defense.equipmentAudit?.units ?? []) {
+        if (
+          unit.unitId !== undefined &&
+          ((unit.missingRunesCount ?? 0) > 0 ||
+            (unit.missingArtifactsCount ?? 0) > 0 ||
+            (unit.unitLevel ?? 40) < 40)
+        ) {
+          siegeIssueByUnitId.set(unit.unitId, unit);
+        }
+      }
+    }
+
+    if (siegeIssueByUnitId.size === 0) {
+      continue;
+    }
+
+    member.guildWarDefenses = member.guildWarDefenses.map((defense) => {
+      const sharedUnits = (defense.unitIds ?? [])
+        .map((unitId) => siegeIssueByUnitId.get(unitId))
+        .filter((unit): unit is DefenseUnitEquipment => Boolean(unit));
+
+      if (sharedUnits.length === 0) {
+        return defense;
+      }
+
+      const equipmentAudit = createEquipmentAuditFromUnits(sharedUnits);
+
+      return {
+        ...defense,
+        equipmentAudit,
+        complianceAudit: createDefenseComplianceAudit("guildWar", defense.team, equipmentAudit),
+      };
+    });
+  }
+};
 
 const summarizeTeams = (teamMap: Map<string, TeamUsageAccumulator>): TeamUsageSummary[] =>
   [...teamMap.values()]
@@ -832,6 +883,7 @@ const parseGuildWarDefenseDecks = (
       deckId,
       round: toOptionalNumber(deck?.round),
       ratingId: member?.member.ratingId,
+      unitIds,
       team,
       source: entry.fileName,
       equipmentAudit,
@@ -889,6 +941,7 @@ const parseGuildWarDefenseSummariesFromGuildDataAll = (
         deckId,
         round: toOptionalNumber(deck?.round),
         ratingId: member.member.ratingId,
+        unitIds: toNumberArray(deck?.unit_id_list).filter((unitId) => Number.isFinite(unitId)),
         team,
         wins,
         losses,
@@ -951,8 +1004,13 @@ const parseGuildWarBattleLogs = (
     return;
   }
 
-  for (const matchLog of asArray(entry.data.match_log_list)) {
-    for (const battleLog of asArray(matchLog?.battle_log_list)) {
+  const battleLogGroups = [
+    ...asArray(entry.data.match_log_list).map((matchLog) => matchLog?.battle_log_list),
+    ...asArray(entry.data.battle_log_list),
+  ];
+
+  for (const battleLogGroup of battleLogGroups) {
+    for (const battleLog of asArray(battleLogGroup)) {
       const attacker = battleLog?.user_list?.[0];
       const defender = battleLog?.user_list?.[1];
       const member = getMember(members, Number(attacker?.wizard_id));
@@ -973,7 +1031,7 @@ const parseGuildWarBattleLogs = (
         const team = createTeam(toNumberArray(teamUnits));
         const outcome = outcomeMap[outcomes[index]] ?? "unknown";
 
-        if (!member || team.monsters.length === 0) {
+        if (!member) {
           return;
         }
 
@@ -995,7 +1053,9 @@ const parseGuildWarBattleLogs = (
 
         registerProvenance(member, "guildWarAttacks", entry.fileName);
         member.guildWarAttacks.push(record);
-        registerTeamUsage(member.guildWarTeamStats, `base:${battleLog?.base_id}`, team, outcome);
+        if (team.monsters.length > 0) {
+          registerTeamUsage(member.guildWarTeamStats, `base:${battleLog?.base_id}`, team, outcome);
+        }
       });
     }
   }
@@ -1138,10 +1198,31 @@ const parseActiveRosterSnapshot = (
       guildName,
       guildGrade: grade,
       guildRole: mapGuildGradeToRole(grade),
+      joinedAt:
+        Number.isFinite(Number(memberData?.join_timestamp)) && Number(memberData?.join_timestamp) > 0
+          ? new Date(Number(memberData.join_timestamp) * 1000).toISOString()
+          : undefined,
     });
   }
 
   return [...new Set(activeRosterWizardIds)].sort((left, right) => left - right);
+};
+
+const createEquipmentAuditFromUnits = (
+  units: DefenseUnitEquipment[],
+): DefenseEquipmentAudit => {
+  const issuesCount = units.filter(
+    (unit) => (unit.missingRunesCount ?? 0) > 0 || (unit.missingArtifactsCount ?? 0) > 0,
+  ).length;
+  const status: DefenseEquipmentAudit["status"] = issuesCount > 0 ? "incomplete" : "ok";
+
+  return {
+    status,
+    canIdentifySlots: false,
+    summary: buildEquipmentSummary(units, status),
+    issuesCount,
+    units,
+  };
 };
 
 const parseSiegeDefenseDecks = (
@@ -1187,6 +1268,7 @@ const parseSiegeDefenseDecks = (
       position: toOptionalNumber(defenseUnit?.pos_id),
       unitId: toOptionalNumber(defenseUnit?.unit_info?.unit_id),
       unitMasterId: toOptionalNumber(defenseUnit?.unit_info?.unit_master_id),
+      unitLevel: toOptionalNumber(defenseUnit?.unit_info?.unit_level),
     };
     const existingIndex = units.findIndex((unit) => unit.position === nextUnit.position);
 
@@ -1254,6 +1336,9 @@ const parseSiegeDefenseDecks = (
       deckId,
       assignedBase: assignmentMap.get(deckId),
       ratingId: member.member.ratingId,
+      unitIds: units
+        .map((unit) => unit.unitId)
+        .filter((unitId): unitId is number => Number.isFinite(unitId)),
       team,
       wins,
       losses,
@@ -1362,7 +1447,7 @@ const parseSiegeBattleLogs = (
       const firstTeam = createTeam(toNumberArray(teamValues[0]));
       const outcome = outcomeMap[Number(battle?.win_lose)] ?? "unknown";
 
-      if (!member || firstTeam.monsters.length === 0) {
+      if (!member) {
         continue;
       }
 
@@ -1384,7 +1469,9 @@ const parseSiegeBattleLogs = (
 
       registerProvenance(member, "siegeAttacks", entry.fileName);
       member.siegeAttacks.push(record);
-      registerTeamUsage(member.siegeTeamStats, `base:${battle?.base_number}`, firstTeam, outcome);
+      if (firstTeam.monsters.length > 0) {
+        registerTeamUsage(member.siegeTeamStats, `base:${battle?.base_number}`, firstTeam, outcome);
+      }
     }
   }
 };
@@ -1452,6 +1539,8 @@ export const buildGuildLeadershipPayload = (
         break;
     }
   }
+
+  propagateSharedEquipmentAudits(members);
 
   return {
     generatedAt: new Date().toISOString(),
