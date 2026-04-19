@@ -355,17 +355,26 @@ const buildRemovalMarker = (
     };
   }
 
-  if (!cooldownActive || memberDidSubjugation(member)) {
+  const missingRequiredParticipation = assessments.filter(
+    (assessment) =>
+      (assessment.eventKey === "subjugation" || assessment.eventKey === "labyrinth") &&
+      assessment.required &&
+      assessment.completed < assessment.expected,
+  );
+
+  if (!cooldownActive || missingRequiredParticipation.length === 0) {
     return {
       markedForRemoval: false,
       removalReasonSummary: undefined,
     };
   }
 
+  const missingLabels = missingRequiredParticipation.map((assessment) => assessment.label);
+
   return {
     markedForRemoval: true,
     removalReasonSummary:
-      "Marcado para remo\u00e7\u00e3o: membro suspenso na semana anterior e sem participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o desta semana.",
+      `Marcado para remo\u00e7\u00e3o: membro suspenso na semana anterior e sem participa\u00e7\u00e3o suficiente em ${missingLabels.join(" e ")} nesta semana.`,
   };
 };
 const memberWasAssignedToSiege = (member: GuildCurrentMemberStateDto) =>
