@@ -828,7 +828,12 @@ export class WeeklyPunishmentService {
     existingPunishment?: GuildWeeklyPunishmentDto,
   ) {
     const latestRecentPunishment = recentPunishments
-      .filter((punishment) => punishment.wizardId === member.wizardId && punishment.punishmentApplied)
+      .filter(
+        (punishment) =>
+          punishment.wizardId === member.wizardId &&
+          punishment.punishmentApplied &&
+          punishment.weekKey !== week.weekKey,
+      )
       .sort(
         (left, right) =>
           new Date(right.evaluatedAt).getTime() - new Date(left.evaluatedAt).getTime(),
