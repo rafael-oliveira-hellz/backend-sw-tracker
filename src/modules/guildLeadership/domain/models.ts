@@ -158,6 +158,17 @@ export interface SubjugationDto {
   contributeRatio?: number;
   rank?: number;
   lastUpdated?: string;
+  weekNum?: number;
+  miniBossTypes?: number[];
+  bossTypes?: number[];
+  battleLogs?: Array<{
+    battleType: number;
+    clearScore?: number;
+    battleCount?: number;
+    dateAdd?: string;
+    dateMod?: string;
+    bossDetected?: boolean;
+  }>;
 }
 
 export interface LabyrinthDto {

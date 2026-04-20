@@ -191,6 +191,17 @@ export type MemberLeadershipPayload = {
     contributeRatio?: number;
     rank?: number;
     lastUpdated?: string;
+    weekNum?: number;
+    miniBossTypes?: number[];
+    bossTypes?: number[];
+    battleLogs?: Array<{
+      battleType: number;
+      clearScore?: number;
+      battleCount?: number;
+      dateAdd?: string;
+      dateMod?: string;
+      bossDetected?: boolean;
+    }>;
   };
   labyrinth: {
     score?: number;
@@ -1129,10 +1140,90 @@ const parseGuildBossContribute = (
 
     registerProvenance(member, "subjugation", entry.fileName);
     member.subjugation = {
+      ...member.subjugation,
       clearScore: Number(score?.clear_score ?? 0),
       contributeRatio: Number(score?.contribute_ratio ?? 0),
       rank: Number(score?.rank ?? 0),
       lastUpdated: score?.clear_score_modify,
+      weekNum: toOptionalNumber(score?.week_num) ?? member.subjugation.weekNum,
+    };
+  }
+};
+
+const normalizeBattleType = (value: unknown) => Math.trunc(Number(value ?? 0));
+
+const isSubjugationMiniBossType = (battleType: number) =>
+  battleType >= 101 && battleType <= 103;
+
+const isSubjugationBossType = (battleType: number) =>
+  battleType >= 201 && battleType <= 203;
+
+const parseGuildBossBattleLogs = (
+  entry: GuildSnapshotEntry,
+  members: Map<number, MemberAccumulator>,
+) => {
+  if (Array.isArray(entry.data)) {
+    return;
+  }
+
+  for (const log of asArray(entry.data.clear_score_info)) {
+    const battleType = normalizeBattleType(log?.battle_type);
+    const wizardId = Number(log?.wizard_id);
+    const member = getMember(members, wizardId);
+
+    mergeMemberInfo(member, {
+      wizardId,
+      guildId: toOptionalNumber(log?.guild_id),
+    });
+
+    if (!member || !Number.isFinite(battleType) || battleType <= 0) {
+      continue;
+    }
+
+    registerProvenance(member, "subjugation", entry.fileName);
+
+    const miniBossTypes = new Set(member.subjugation.miniBossTypes ?? []);
+    const bossTypes = new Set(member.subjugation.bossTypes ?? []);
+    const bossDetected =
+      isSubjugationBossType(battleType) ||
+      asArray(log?.opp_last_wave_unit_list).some((unit) => Number(unit?.boss ?? 0) === 1);
+
+    if (isSubjugationMiniBossType(battleType)) {
+      miniBossTypes.add(battleType);
+    }
+
+    if (bossDetected) {
+      bossTypes.add(battleType);
+    }
+
+    const battleLogs = [...(member.subjugation.battleLogs ?? [])];
+    const nextLog = {
+      battleType,
+      clearScore: toOptionalNumber(log?.clear_score),
+      battleCount: toOptionalNumber(log?.battle_count),
+      dateAdd: typeof log?.date_add === "string" ? log.date_add : undefined,
+      dateMod: typeof log?.date_mod === "string" ? log.date_mod : undefined,
+      bossDetected,
+    };
+    const existingIndex = battleLogs.findIndex(
+      (current) => current.battleType === battleType,
+    );
+
+    if (existingIndex >= 0) {
+      battleLogs[existingIndex] = nextLog;
+    } else {
+      battleLogs.push(nextLog);
+    }
+
+    member.subjugation = {
+      ...member.subjugation,
+      weekNum: toOptionalNumber(log?.week_num) ?? member.subjugation.weekNum,
+      miniBossTypes: [...miniBossTypes].sort((left, right) => left - right),
+      bossTypes: [...bossTypes].sort((left, right) => left - right),
+      battleLogs: battleLogs.sort((left, right) => left.battleType - right.battleType),
+      lastUpdated:
+        (typeof log?.date_mod === "string" ? log.date_mod : undefined) ??
+        member.subjugation.lastUpdated,
     };
   }
 };
@@ -1509,6 +1600,9 @@ export const buildGuildLeadershipPayload = (
         break;
       case "getGuildBossContributeList":
         parseGuildBossContribute(entry, members);
+        break;
+      case "getGuildBossBattleLogByWizard":
+        parseGuildBossBattleLogs(entry, members);
         break;
       case "getGuildAttendInfo":
         parseAttendance(entry, members);
