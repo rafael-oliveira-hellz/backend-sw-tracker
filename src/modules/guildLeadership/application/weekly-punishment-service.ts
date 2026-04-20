@@ -928,7 +928,7 @@ export class WeeklyPunishmentService {
       .map((assessment) => assessment.eventKey);
     const punishmentApplied = punishedEventKeys.length > 0;
     const suspensionEndsAt = punishmentApplied
-      ? endOfBrazilCalendarDay(week.weekEnd).toISOString()
+      ? endOfBrazilCalendarDay(addUtcDays(week.weekEnd, 7)).toISOString()
       : nextEligiblePenaltyAt;
     const { markedForRemoval, removalReasonSummary } = buildRemovalMarker(
       member,
