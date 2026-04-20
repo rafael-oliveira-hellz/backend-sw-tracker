@@ -710,7 +710,6 @@ export class WeeklyPunishmentService {
         member,
         week,
         recentPunishments,
-        existingPunishment,
       );
 
       const incomingAssessments = this.buildDefenseComplianceAssessments(
@@ -760,7 +759,6 @@ export class WeeklyPunishmentService {
         member,
         week,
         recentPunishments,
-        existingPunishment,
       );
 
       const incomingAssessments = await this.buildParticipationAssessments(
@@ -797,7 +795,6 @@ export class WeeklyPunishmentService {
         member,
         week,
         recentPunishments,
-        existingPunishment,
       );
 
       const incomingAssessments = this.buildDefenseSetupAssessments(
@@ -825,7 +822,6 @@ export class WeeklyPunishmentService {
     member: GuildCurrentMemberStateDto,
     week: WeekRange,
     recentPunishments: GuildWeeklyPunishmentDto[],
-    existingPunishment?: GuildWeeklyPunishmentDto,
   ) {
     const latestRecentPunishment = recentPunishments
       .filter(
@@ -844,11 +840,12 @@ export class WeeklyPunishmentService {
       : undefined;
     const cooldownActive = priorSuspensionEndsAt
       ? priorSuspensionEndsAt.getTime() >= startOfBrazilCalendarDay(week.weekStart).getTime()
-      : existingPunishment?.cooldownActive ?? false;
+      : false;
 
-    const nextEligiblePenaltyAt = priorSuspensionEndsAt
-      ? priorSuspensionEndsAt.toISOString()
-      : existingPunishment?.nextEligiblePenaltyAt;
+    const nextEligiblePenaltyAt =
+      cooldownActive && priorSuspensionEndsAt
+        ? priorSuspensionEndsAt.toISOString()
+        : undefined;
 
     return {
       cooldownActive,
