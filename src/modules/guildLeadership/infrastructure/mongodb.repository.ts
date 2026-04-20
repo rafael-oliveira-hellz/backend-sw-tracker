@@ -323,6 +323,20 @@ export class MongoGuildLeadershipRepository
     const collection = await this.getCollection<GuildWeeklyPunishmentEntity>(
       this.collections.weeklyPunishments,
     );
+    const reference = punishments[0];
+    const wizardIds = punishments.map((punishment) => punishment.wizardId);
+    const orphanQuery: Record<string, unknown> = {
+      weekKey: reference.weekKey,
+      wizardId: { $nin: wizardIds },
+    };
+
+    if (reference.guildId !== undefined) {
+      orphanQuery.guildId = reference.guildId;
+    } else if (reference.guildName) {
+      orphanQuery.guildName = reference.guildName;
+    }
+
+    await collection.deleteMany(orphanQuery);
 
     await Promise.all(
       punishments.map((punishment) =>
