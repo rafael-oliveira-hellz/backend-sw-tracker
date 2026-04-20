@@ -22,6 +22,7 @@ const LABYRINTH_CYCLE_DAYS = 15;
 const LABYRINTH_ACTIVE_DAYS = 4;
 const GUILD_WAR_REQUIRED_DEFENSES = 5;
 const SIEGE_REQUIRED_DEFENSES = 3;
+const SUBJUGATION_BOSS_MIN_SCORE = 3_000_000;
 
 type CalendarDate = {
   year: number;
@@ -261,11 +262,11 @@ const normalizeRequiredAttacksByDay = (input: number[] | undefined, days: number
   });
 };
 
+const getSubjugationScore = (member: GuildCurrentMemberStateDto) =>
+  Math.max(0, Math.trunc(member.subjugation.clearScore ?? 0));
+
 const memberDidSubjugation = (member: GuildCurrentMemberStateDto) =>
-  Boolean(
-    (member.subjugation.clearScore ?? 0) > 0 ||
-      (member.subjugation.contributeRatio ?? 0) > 0,
-  );
+  getSubjugationScore(member) >= SUBJUGATION_BOSS_MIN_SCORE;
 
 const buildReason = (
   label: string,
@@ -943,6 +944,7 @@ export class WeeklyPunishmentService {
     const siegeExpected = siegeAssigned ? 60 : 0;
     const siegeWouldPunish = siegeAssigned && (siegeOne < 30 || siegeTwo < 30);
 
+    const subjugationScore = getSubjugationScore(member);
     const subjugationCompleted = memberDidSubjugation(member) ? 1 : 0;
     const subjugationRequired = entryRules.subjugationRequired;
     const subjugationWouldPunish = subjugationRequired && subjugationCompleted < 1;
@@ -1023,8 +1025,10 @@ export class WeeklyPunishmentService {
           (!subjugationRequired
             ? "Membro entrou ap\u00f3s quarta-feira; subjuga\u00e7\u00e3o n\u00e3o entra na avalia\u00e7\u00e3o punitiva desta semana."
             : subjugationCompleted > 0
-              ? "Participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o da semana."
-              : "Sem participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o obrigat\u00f3ria da semana."),
+              ? `Boss da subjuga\u00e7\u00e3o registrado com ${subjugationScore.toLocaleString("pt-BR")} pontos.`
+              : subjugationScore > 0
+                ? `Pontua\u00e7\u00e3o insuficiente na subjuga\u00e7\u00e3o: ${subjugationScore.toLocaleString("pt-BR")} pontos. M\u00ednimo de ${SUBJUGATION_BOSS_MIN_SCORE.toLocaleString("pt-BR")} para validar ataque no boss.`
+                : "Sem participa\u00e7\u00e3o registrada na subjuga\u00e7\u00e3o obrigat\u00f3ria da semana."),
       ),
     ];
   }
