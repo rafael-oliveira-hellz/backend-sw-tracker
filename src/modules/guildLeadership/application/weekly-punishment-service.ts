@@ -886,7 +886,8 @@ export class WeeklyPunishmentService {
         (punishment) =>
           punishment.wizardId === member.wizardId &&
           punishment.punishmentApplied &&
-          punishment.weekKey !== week.weekKey,
+          punishment.weekKey !== week.weekKey &&
+          new Date(punishment.weekStart).getTime() < week.weekStart.getTime(),
       )
       .sort(
         (left, right) =>
