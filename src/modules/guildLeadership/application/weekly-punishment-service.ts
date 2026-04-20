@@ -120,8 +120,11 @@ const startOfUtcWeekSunday = (date: Date) => {
 
 const endOfUtcWeekSaturday = (weekStart: Date) => addUtcDays(weekStart, 6);
 
-const endOfUtcDay = (date: Date) =>
-  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999));
+const endOfBrazilCalendarDay = (date: Date) =>
+  new Date(`${formatBrazilDate(date)}T23:59:59.999-03:00`);
+
+const startOfBrazilCalendarDay = (date: Date) =>
+  new Date(`${formatBrazilDate(date)}T00:00:00.000-03:00`);
 
 const buildPreviousCompletedWeekRange = (now: Date): WeekRange => {
   const brazilToday = createUtcDate(getBrazilCalendarDate(now));
@@ -835,7 +838,7 @@ export class WeeklyPunishmentService {
       ? new Date(latestRecentPunishment.nextEligiblePenaltyAt)
       : undefined;
     const cooldownActive = priorSuspensionEndsAt
-      ? priorSuspensionEndsAt.getTime() >= week.weekStart.getTime()
+      ? priorSuspensionEndsAt.getTime() >= startOfBrazilCalendarDay(week.weekStart).getTime()
       : existingPunishment?.cooldownActive ?? false;
 
     const nextEligiblePenaltyAt = priorSuspensionEndsAt
@@ -864,7 +867,7 @@ export class WeeklyPunishmentService {
       .map((assessment) => assessment.eventKey);
     const punishmentApplied = punishedEventKeys.length > 0;
     const suspensionEndsAt = punishmentApplied
-      ? endOfUtcDay(week.weekEnd).toISOString()
+      ? endOfBrazilCalendarDay(week.weekEnd).toISOString()
       : nextEligiblePenaltyAt;
     const { markedForRemoval, removalReasonSummary } = buildRemovalMarker(
       member,
@@ -1197,7 +1200,7 @@ export class WeeklyPunishmentService {
     nextEligiblePenaltyAt?: string,
   ): WeeklyPunishmentEventAssessmentDto[] {
     const cooldownReason = cooldownActive
-      ? `Isento nesta semana por puniÃ§Ã£o anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponÃ­vel"}.`
+      ? `Isento nesta semana por punição anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponível"}.`
       : undefined;
 
     const buildAssessmentForContext = (
@@ -1229,12 +1232,12 @@ export class WeeklyPunishmentService {
         wouldPunish && !cooldownActive,
         cooldownReason ??
           (totalDefenses === 0
-            ? "Nenhuma defesa elegÃ­vel com alerta desse contexto foi encontrada no snapshot atual."
+            ? "Nenhuma defesa elegível com alerta desse contexto foi encontrada no snapshot atual."
             : flaggedDefenses.length === 0
               ? buildReason("Defesas sem alerta", issueFreeDefenses, totalDefenses)
               : phase === "warning"
-                ? `Aviso ativo atÃ© ${warningDeadlineAt ? formatBrazilDateTime(warningDeadlineAt) : "segunda-feira 12:00 de BrasÃ­lia"} para corrigir: ${details}`
-                : `PendÃªncia mantida apÃ³s o prazo final: ${details}`),
+                ? `Aviso ativo até ${warningDeadlineAt ? formatBrazilDateTime(warningDeadlineAt) : "segunda-feira 12:00 de Brasília"} para corrigir: ${details}`
+                : `Pendência mantida após o prazo final: ${details}`),
       );
     };
 
