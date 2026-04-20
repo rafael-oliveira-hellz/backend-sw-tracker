@@ -249,6 +249,29 @@ const listLabyrinthCycleStartsForWeek = (weekStart: Date, weekEnd: Date) => {
   return starts;
 };
 
+const listLabyrinthCycleStartsForWeekFromStatus = (
+  weekStart: Date,
+  weekEnd: Date,
+  labyrinthStatus?: GuildCurrentStateDto["labyrinthStatus"],
+) => {
+  if (!labyrinthStatus?.startAt) {
+    return listLabyrinthCycleStartsForWeek(weekStart, weekEnd);
+  }
+
+  const startAt = new Date(labyrinthStatus.startAt);
+  if (Number.isNaN(startAt.getTime())) {
+    return listLabyrinthCycleStartsForWeek(weekStart, weekEnd);
+  }
+
+  const cycleStart = createUtcDate(getBrazilCalendarDate(startAt));
+  const finishAt = labyrinthStatus.finishAt ? new Date(labyrinthStatus.finishAt) : undefined;
+  const cycleEnd = finishAt && !Number.isNaN(finishAt.getTime())
+    ? createUtcDate(getBrazilCalendarDate(finishAt))
+    : addUtcDays(cycleStart, LABYRINTH_ACTIVE_DAYS - 1);
+
+  return cycleStart <= weekEnd && cycleEnd >= weekStart ? [cycleStart] : [];
+};
+
 const buildDefaultRequiredAttacksByDay = (days: number) =>
   Array.from({ length: Math.max(0, days) }, () => 1);
 
@@ -797,6 +820,7 @@ export class WeeklyPunishmentService {
 
       const incomingAssessments = await this.buildParticipationAssessments(
         member,
+        currentState,
         week,
         cooldownActive,
         nextEligiblePenaltyAt,
@@ -943,6 +967,7 @@ export class WeeklyPunishmentService {
 
   private async buildParticipationAssessments(
     member: GuildCurrentMemberStateDto,
+    currentState: GuildCurrentStateDto,
     week: WeekRange,
     cooldownActive: boolean,
     nextEligiblePenaltyAt?: string,
@@ -987,6 +1012,7 @@ export class WeeklyPunishmentService {
       : undefined;
     const labyrinthAssessment = await this.buildLabyrinthAssessmentForWeek(
       member,
+      currentState,
       week,
       cooldownActive,
       nextEligiblePenaltyAt,
@@ -1071,6 +1097,7 @@ export class WeeklyPunishmentService {
   }
   private async buildLabyrinthAssessmentForWeek(
     member: GuildCurrentMemberStateDto,
+    currentState: GuildCurrentStateDto,
     week: WeekRange,
     cooldownActive: boolean,
     nextEligiblePenaltyAt?: string,
@@ -1080,7 +1107,11 @@ export class WeeklyPunishmentService {
     const cooldownReason = cooldownActive
       ? `Isento nesta semana por punição anterior. Nova elegibilidade em ${nextEligiblePenaltyAt ? formatBrazilDateTime(nextEligiblePenaltyAt) : "data indisponível"}.`
       : undefined;
-    const cycleStarts = listLabyrinthCycleStartsForWeek(week.weekStart, week.weekEnd);
+    const cycleStarts = listLabyrinthCycleStartsForWeekFromStatus(
+      week.weekStart,
+      week.weekEnd,
+      currentState.labyrinthStatus,
+    );
 
     if (cycleStarts.length === 0) {
       return createAssessment(

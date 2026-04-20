@@ -330,6 +330,12 @@ export interface GuildLeadershipPersistenceDto {
   importSources: GuildImportSourceDto[];
   snapshot: GuildLeadershipSnapshotDto;
   activeRosterWizardIds: number[];
+  labyrinthStatus?: {
+    startAt?: string;
+    finishAt?: string;
+    nextStartAt?: string;
+    status?: number;
+  };
   members: GuildMemberSnapshotDto[];
   attacks: GuildAttackEventDto[];
   defenses: GuildDefenseDeckDto[];
@@ -383,6 +389,12 @@ export interface GuildCurrentStateDto {
   snapshotId: string;
   updatedAt: string;
   activeRosterWizardIds: number[];
+  labyrinthStatus?: {
+    startAt?: string;
+    finishAt?: string;
+    nextStartAt?: string;
+    status?: number;
+  };
   siegeMatches: SiegeMatchSummaryDto[];
   members: GuildCurrentMemberStateDto[];
 }
@@ -809,6 +821,7 @@ export function buildCurrentGuildState(
     snapshotId: entities.snapshot.id,
     updatedAt,
     activeRosterWizardIds: [...dto.activeRosterWizardIds],
+    labyrinthStatus: dto.labyrinthStatus,
     siegeMatches: dto.snapshot.siegeMatches,
     members: dto.members
       .filter((member) =>
@@ -1003,6 +1016,7 @@ export function mergeCurrentGuildMemberState(
       channelUid: pickDefined(incoming.member.channelUid, existing.member.channelUid),
       level: pickDefined(incoming.member.level, existing.member.level),
       ratingId: pickDefined(incoming.member.ratingId, existing.member.ratingId),
+      joinedAt: pickDefined(incoming.member.joinedAt, existing.member.joinedAt),
       guildId: pickDefined(incoming.member.guildId, existing.member.guildId),
       guildName: pickDefined(incoming.member.guildName, existing.member.guildName),
       guildRole: pickDefined(incoming.member.guildRole, existing.member.guildRole),
@@ -1089,6 +1103,7 @@ export function mergeCurrentGuildState(
     snapshotId: incoming.snapshotId,
     updatedAt: incoming.updatedAt,
     activeRosterWizardIds: effectiveActiveRosterWizardIds,
+    labyrinthStatus: incoming.labyrinthStatus ?? existing.labyrinthStatus,
     siegeMatches: mergeSiegeMatches(existing.siegeMatches ?? [], incoming.siegeMatches ?? []),
     members: Array.from(memberMap.values())
       .filter((member) => (activeRosterSet.size === 0 ? true : activeRosterSet.has(member.wizardId)))

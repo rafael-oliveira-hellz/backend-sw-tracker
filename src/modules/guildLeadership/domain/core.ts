@@ -233,6 +233,12 @@ export type GuildLeadershipPayload = {
     notes: string;
   };
   activeRosterWizardIds: number[];
+  labyrinthStatus?: {
+    startAt?: string;
+    finishAt?: string;
+    nextStartAt?: string;
+    status?: number;
+  };
   members: MemberLeadershipPayload[];
   siegeMatches: SiegeMatchSummary[];
 };
@@ -1150,6 +1156,31 @@ const parseGuildBossContribute = (
   }
 };
 
+const parseGuildMazeStatusInfo = (entry: GuildSnapshotEntry) => {
+  if (Array.isArray(entry.data)) {
+    return undefined;
+  }
+
+  const participation = entry.data.guildmaze_participation;
+  if (!participation) {
+    return undefined;
+  }
+
+  const toIso = (value: unknown) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0
+      ? new Date(numeric * 1000).toISOString()
+      : undefined;
+  };
+
+  return {
+    startAt: toIso(participation.start_time),
+    finishAt: toIso(participation.finish_time),
+    nextStartAt: toIso(participation.next_start_time),
+    status: toOptionalNumber(participation.status),
+  };
+};
+
 const normalizeBattleType = (value: unknown) => Math.trunc(Number(value ?? 0));
 
 const isSubjugationMiniBossType = (battleType: number) =>
@@ -1573,6 +1604,7 @@ export const buildGuildLeadershipPayload = (
   const members = new Map<number, MemberAccumulator>();
   const siegeMatches = new Map<string, SiegeMatchSummary>();
   let activeRosterWizardIds: number[] = [];
+  let labyrinthStatus: GuildLeadershipPayload["labyrinthStatus"];
   const monsterMap = extractMonsterIdMap(snapshots);
   const siegeDeckUnitsEntry = snapshots.find(
     (entry) => decodeCommand(entry) === "SWGTSiegeDeckUnits",
@@ -1597,6 +1629,9 @@ export const buildGuildLeadershipPayload = (
         break;
       case "GetGuildMazeContributeList":
         parseGuildMazeContribute(entry, members);
+        break;
+      case "GetGuildMazeStatusInfo":
+        labyrinthStatus = parseGuildMazeStatusInfo(entry) ?? labyrinthStatus;
         break;
       case "getGuildBossContributeList":
         parseGuildBossContribute(entry, members);
@@ -1644,6 +1679,7 @@ export const buildGuildLeadershipPayload = (
       notes: "Arquivos sao ordenados por nome; quando ha duplicidade, o mais novo processado por ultimo prevalece para campos escalares.",
     },
     activeRosterWizardIds,
+    labyrinthStatus,
     members: [...members.values()]
       .map((member) => ({
         member: member.member,

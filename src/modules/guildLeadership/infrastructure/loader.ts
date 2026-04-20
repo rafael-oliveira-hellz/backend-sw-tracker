@@ -277,6 +277,7 @@ const buildPersistencePayloadFromSnapshots = (
       mergePolicy: leadershipPayload.mergePolicy,
     },
     activeRosterWizardIds: leadershipPayload.activeRosterWizardIds,
+    labyrinthStatus: leadershipPayload.labyrinthStatus,
     members,
     attacks: attacks.sort((left, right) => (right.occurredAt ?? 0) - (left.occurredAt ?? 0)),
     defenses,
