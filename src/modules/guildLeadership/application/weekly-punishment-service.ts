@@ -864,7 +864,7 @@ export class WeeklyPunishmentService {
       .map((assessment) => assessment.eventKey);
     const punishmentApplied = punishedEventKeys.length > 0;
     const suspensionEndsAt = punishmentApplied
-      ? endOfUtcDay(buildCurrentWeekRange(new Date(evaluatedAt)).weekEnd).toISOString()
+      ? endOfUtcDay(week.weekEnd).toISOString()
       : nextEligiblePenaltyAt;
     const { markedForRemoval, removalReasonSummary } = buildRemovalMarker(
       member,
@@ -1242,13 +1242,13 @@ export class WeeklyPunishmentService {
       buildAssessmentForContext(
         "guildWar",
         "guildWarDefenseCompliance",
-        "Alerta de composiÃ§Ã£o/equipamento em GW",
+        "Alerta de composição/equipamento em GW",
         member.guildWar.defenses,
       ),
       buildAssessmentForContext(
         "siege",
         "siegeDefenseCompliance",
-        "Alerta de composiÃ§Ã£o/equipamento em Siege",
+        "Alerta de composição/equipamento em Siege",
         member.siege.defenses,
       ),
     ];
